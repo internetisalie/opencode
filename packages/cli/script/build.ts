@@ -83,6 +83,7 @@ for (const item of targets) {
     },
     define: {
       OPENCODE_VERSION: `'${Script.version}'`,
+      OPENCODE_PACKAGE_VERSION: `'${process.env.OPENCODE_PACKAGE_VERSION ?? Script.version}'`,
       OPENCODE_CLI_NAME: `'${binary}'`,
       OPENCODE_MODELS_DEV: modelsData,
       OPENCODE_CHANNEL: `'${Script.channel}'`,

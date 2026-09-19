@@ -10,7 +10,7 @@ import {
 } from "./shared"
 import { ConfigPlugin } from "@/config/plugin"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { InstallationPackageVersion } from "@opencode-ai/core/installation/version"
 
 export namespace PluginLoader {
   // A normalized plugin declaration derived from config before any filesystem or npm work happens.
@@ -124,7 +124,7 @@ export namespace PluginLoader {
     // as local development code and skip this compatibility gate.
     if (base.source === "npm") {
       try {
-        await checkPluginCompatibility(base.target, InstallationVersion, base.pkg)
+        await checkPluginCompatibility(base.target, InstallationPackageVersion, base.pkg)
       } catch (error) {
         return { ok: false, stage: "compatibility", error }
       }
