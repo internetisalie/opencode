@@ -12,6 +12,7 @@ on:
       - bun.lock
   push:
     branches: [dev]
+    tags: [loom-image-*]
   workflow_dispatch:
 
 permissions:
