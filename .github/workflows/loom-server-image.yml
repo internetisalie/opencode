@@ -1,0 +1,50 @@
+name: loom OpenCode server image
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - .github/workflows/loom-server-image.yml
+      - packages/opencode/**
+      - packages/core/**
+      - packages/protocol/**
+      - package.json
+      - bun.lock
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    if: github.repository == 'internetisalie/opencode'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/setup-bun
+      - name: Build Linux x64 server binary
+        working-directory: packages/opencode
+        run: bun script/build.ts --single --skip-install --skip-embed-web-ui
+      - name: Verify binary
+        run: |
+          test -x packages/opencode/dist/opencode-linux-x64/bin/opencode
+          packages/opencode/dist/opencode-linux-x64/bin/opencode --version
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4 # v6
+        with:
+          context: packages/opencode
+          file: packages/opencode/Dockerfile.loom
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/internetisalie/opencode-stable:${{ github.sha }}
