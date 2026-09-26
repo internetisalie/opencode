@@ -120,6 +120,7 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
           const cursor = Number(url.searchParams.get("cursor") ?? "0")
           const role = url.searchParams.get("role") === "observer" ? "observer" : "controller"
           const framedInput = url.searchParams.get("input_protocol") === "1"
+          const inputAck = url.searchParams.get("input_ack") === "1"
           const attachmentID = url.searchParams.get("attachment_id") ?? crypto.randomUUID()
           if (!Number.isSafeInteger(cursor) || cursor < 0) return HttpServerResponse.empty({ status: 400 })
 
@@ -127,6 +128,8 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
           const write = yield* socket.writer
           const outbox = yield* Queue.unbounded<string | Uint8Array | Socket.CloseEvent>()
           const input = yield* Semaphore.make(1)
+          const acknowledgeInput = () =>
+            inputAck ? Effect.sync(() => Queue.offerUnsafe(outbox, '{"type":"input_ack"}')) : Effect.void
           let attachment: PersistentPty.Attachment | undefined
           // Bun's native ws upgrade must start before asynchronous daemon I/O.
           const onOpen = Effect.gen(function* () {
@@ -209,7 +212,7 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
                           attachment.info.size.rows,
                           data,
                         )
-                        .pipe(Effect.ignore)
+                        .pipe(Effect.tap(acknowledgeInput), Effect.ignore)
                     if (data.byteLength < 5) return Effect.void
                     const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
                     const type = data[0]
@@ -217,7 +220,9 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
                     const rows = view.getUint16(3)
                     if ((type !== 0 && type !== 1) || cols === 0 || rows === 0) return Effect.void
                     if (type === 0) return pty.control(ctx.params.ptyID, attachmentID, cols, rows).pipe(Effect.ignore)
-                    return pty.input(ctx.params.ptyID, attachmentID, cols, rows, data.subarray(5)).pipe(Effect.ignore)
+                    return pty
+                      .input(ctx.params.ptyID, attachmentID, cols, rows, data.subarray(5))
+                      .pipe(Effect.tap(acknowledgeInput), Effect.ignore)
                   }),
                 ),
               { onOpen },

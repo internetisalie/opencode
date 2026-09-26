@@ -15,6 +15,38 @@ const binary = process.env.OPENCODE_PTY_BIN ?? "/root/projects/opencode-pty/targ
 const smoke = existsSync(binary) ? it.live : it.live.skip
 
 smoke(
+  "acknowledges accepted raw and framed WebSocket input before disconnect",
+  () =>
+    Effect.gen(function* () {
+      const fixture = yield* testDirectory("xdg")
+      const server = yield* ServerProcess.start<never, never>({
+        hostname: "127.0.0.1",
+        port: 0,
+        password: "secret",
+        app: { version: "test-version" },
+        database: { path: fixture.database },
+        fs: { filewatcher: false },
+      })
+      const base = HttpServer.formatAddress(server.address)
+      const terminal = Schema.decodeUnknownSync(PersistentPty.Info)(
+        (yield* request(base, "POST", "/api/experimental/session/ses_input_ack/terminal", {
+          command: "/bin/sh",
+          args: ["-c", "stty -echo; exec cat"],
+          cwd: fixture.root,
+          title: "input acknowledgement",
+          env: {},
+        })).data,
+      )
+      yield* Effect.promise(() => sendInputAndWaitForAck(base, terminal.id, "raw-ack\n", false))
+      expect(yield* waitForText(base, terminal.id, "raw-ack")).toContain("raw-ack")
+      yield* Effect.promise(() => sendInputAndWaitForAck(base, terminal.id, "framed-ack\n", true))
+      expect(yield* waitForText(base, terminal.id, "framed-ack")).toContain("framed-ack")
+      yield* request(base, "DELETE", `/api/experimental/persistent-pty/${terminal.id}`)
+    }),
+  20_000,
+)
+
+smoke(
   "reads the latest controlled terminal with optional physical line counts through the SDK",
   () =>
     Effect.gen(function* () {
@@ -587,6 +619,62 @@ async function verifySharedControl(base: string, ptyID: string) {
   } finally {
     first.socket.close()
     second.socket.close()
+  }
+}
+
+async function sendInputAndWaitForAck(base: string, ptyID: string, value: string, framed: boolean) {
+  const response = await Effect.runPromise(
+    request(base, "POST", `/api/experimental/persistent-pty/${ptyID}/connect-token`, undefined, {
+      "x-opencode-ticket": "1",
+    }),
+  )
+  if (!isRecord(response.data) || typeof response.data.ticket !== "string")
+    throw new Error("Persistent PTY connect token response was invalid")
+  const url = new URL(`/api/experimental/persistent-pty/${ptyID}/connect`, base)
+  url.protocol = "ws:"
+  url.searchParams.set("ticket", response.data.ticket)
+  url.searchParams.set("input_ack", "1")
+  if (framed) url.searchParams.set("input_protocol", "1")
+  const socket = new WebSocket(url)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let attached = false
+      let sent = false
+      let finished = false
+      const finish = (error?: Error) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timeout)
+        if (error) reject(error)
+        else resolve()
+      }
+      const timeout = setTimeout(() => finish(new Error("Persistent PTY input acknowledgement timed out")), 5_000)
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return
+        const message: unknown = JSON.parse(event.data)
+        if (!isRecord(message)) return
+        if (message.type === "attached") {
+          if (message.inputProtocol !== (framed ? 1 : 0)) {
+            finish(new Error("Persistent PTY WebSocket negotiated an unexpected input protocol"))
+            return
+          }
+          attached = true
+        }
+        if (message.type === "replay_complete" && attached) {
+          sent = true
+          socket.send(framed ? inputFrame(80, 24, value) : new TextEncoder().encode(value))
+        }
+        if (message.type === "input_ack" && sent) finish()
+      })
+      socket.addEventListener("close", () =>
+        finish(new Error("Persistent PTY socket closed before input acknowledgement")),
+      )
+      socket.addEventListener("error", () =>
+        finish(new Error("Persistent PTY socket failed before input acknowledgement")),
+      )
+    })
+  } finally {
+    socket.close()
   }
 }
 
