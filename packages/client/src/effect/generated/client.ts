@@ -162,6 +162,12 @@ import type {
   ProjectListOutput,
   ProjectUpdateInput,
   ProjectUpdateOutput,
+  ProjectDirectoriesInput,
+  ProjectDirectoriesOutput,
+  ProjectDirectoryCreateInput,
+  ProjectDirectoryCreateOutput,
+  ProjectDirectoryRemoveInput,
+  ProjectDirectoryRemoveOutput,
   FormListInput,
   FormListOutput,
   PermissionRequestListInput,
@@ -1058,9 +1064,33 @@ const EndpointProjectUpdate = (raw: RawClient["server.project"]) => (input: Proj
     }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointProjectDirectories = (raw: RawClient["server.project"]) => (input: ProjectDirectoriesInput) =>
+  preserveEffect<ProjectDirectoriesOutput>()(
+    raw["project.directories"]({ params: { projectID: input["projectID"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointProjectDirectoryCreate = (raw: RawClient["server.project"]) => (input: ProjectDirectoryCreateInput) =>
+  preserveEffect<ProjectDirectoryCreateOutput>()(
+    raw["project.directoryCreate"]({
+      params: { projectID: input["projectID"] },
+      payload: { directory: input["directory"], strategy: input["strategy"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointProjectDirectoryRemove = (raw: RawClient["server.project"]) => (input: ProjectDirectoryRemoveInput) =>
+  preserveEffect<ProjectDirectoryRemoveOutput>()(
+    raw["project.directoryRemove"]({
+      params: { projectID: input["projectID"] },
+      query: { directory: input["directory"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const adaptGroupProject = (raw: RawClient["server.project"]) => ({
   list: EndpointProjectList(raw),
   update: EndpointProjectUpdate(raw),
+  directories: EndpointProjectDirectories(raw),
+  directoryCreate: EndpointProjectDirectoryCreate(raw),
+  directoryRemove: EndpointProjectDirectoryRemove(raw),
 })
 
 const EndpointFormList = (raw: RawClient["server.form"]) => (input?: FormListInput) =>

@@ -1755,9 +1755,34 @@ export type ProjectUpdateInput = {
 export type ProjectUpdateOutput = Project.Info
 export type ProjectUpdateOperation<E = never> = (input: ProjectUpdateInput) => Effect.Effect<ProjectUpdateOutput, E>
 
+export type ProjectDirectoriesInput = { readonly projectID: Project.ID }
+export type ProjectDirectoriesOutput = Project.Directories
+export type ProjectDirectoriesOperation<E = never> = (
+  input: ProjectDirectoriesInput,
+) => Effect.Effect<ProjectDirectoriesOutput, E>
+
+export type ProjectDirectoryCreateInput = {
+  readonly projectID: Project.ID
+  readonly directory: AbsolutePath
+  readonly strategy?: string | undefined
+}
+export type ProjectDirectoryCreateOutput = Project.Directories
+export type ProjectDirectoryCreateOperation<E = never> = (
+  input: ProjectDirectoryCreateInput,
+) => Effect.Effect<ProjectDirectoryCreateOutput, E>
+
+export type ProjectDirectoryRemoveInput = { readonly projectID: Project.ID; readonly directory: AbsolutePath }
+export type ProjectDirectoryRemoveOutput = Project.Directories
+export type ProjectDirectoryRemoveOperation<E = never> = (
+  input: ProjectDirectoryRemoveInput,
+) => Effect.Effect<ProjectDirectoryRemoveOutput, E>
+
 export interface ProjectApi<E = never> {
   readonly list: ProjectListOperation<E>
   readonly update: ProjectUpdateOperation<E>
+  readonly directories: ProjectDirectoriesOperation<E>
+  readonly directoryCreate: ProjectDirectoryCreateOperation<E>
+  readonly directoryRemove: ProjectDirectoryRemoveOperation<E>
 }
 
 export type FormListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }

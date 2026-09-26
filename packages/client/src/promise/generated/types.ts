@@ -303,6 +303,8 @@ export type ProjectCommands = { start?: string }
 
 export type ProjectTime = { created: number; updated: number; active: number }
 
+export type ProjectDirectory = { directory: string; strategy?: string }
+
 export type PermissionSource = { type: "tool"; messageID: string; id: string }
 
 export type PermissionSavedInfo = {
@@ -1507,6 +1509,8 @@ export type ProjectUpdated = {
     sandboxes: Array<string>
   }
 }
+
+export type ProjectDirectories = Array<ProjectDirectory>
 
 export type PermissionRequest = {
   id: string
@@ -5728,6 +5732,25 @@ export type ProjectUpdateInput = {
 }
 
 export type ProjectUpdateOutput = Project
+
+export type ProjectDirectoriesInput = { readonly projectID: { readonly projectID: string }["projectID"] }
+
+export type ProjectDirectoriesOutput = ProjectDirectories
+
+export type ProjectDirectoryCreateInput = {
+  readonly projectID: { readonly projectID: string }["projectID"]
+  readonly directory: { readonly directory: string; readonly strategy?: string }["directory"]
+  readonly strategy?: { readonly directory: string; readonly strategy?: string }["strategy"]
+}
+
+export type ProjectDirectoryCreateOutput = ProjectDirectories
+
+export type ProjectDirectoryRemoveInput = {
+  readonly projectID: { readonly projectID: string }["projectID"]
+  readonly directory: { readonly directory: string }["directory"]
+}
+
+export type ProjectDirectoryRemoveOutput = ProjectDirectories
 
 export type FormListInput = {
   readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]

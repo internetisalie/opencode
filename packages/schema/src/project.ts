@@ -57,5 +57,27 @@ export const UpdateInput = Schema.Struct({
 }).annotate({ identifier: "Project.UpdateInput" })
 export interface UpdateInput extends Schema.Schema.Type<typeof UpdateInput> {}
 
+export const Directory = Schema.Struct({
+  directory: AbsolutePath,
+  strategy: optional(Schema.String),
+}).annotate({ identifier: "Project.Directory" })
+export type Directory = typeof Directory.Type
+
+export const Directories = Schema.Array(Directory).annotate({ identifier: "Project.Directories" })
+export type Directories = typeof Directories.Type
+
+export const AssociateInput = Schema.Struct({
+  projectID: ID,
+  directory: AbsolutePath,
+  strategy: optional(Schema.String),
+}).annotate({ identifier: "Project.AssociateInput" })
+export type AssociateInput = typeof AssociateInput.Type
+
+export const DissociateInput = Schema.Struct({
+  projectID: ID,
+  directory: AbsolutePath,
+}).annotate({ identifier: "Project.DissociateInput" })
+export type DissociateInput = typeof DissociateInput.Type
+
 const Updated = ephemeral({ type: "project.updated", schema: Info.fields })
 export const Event = { Updated, Definitions: inventory(Updated) }

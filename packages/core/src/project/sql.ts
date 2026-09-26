@@ -1,6 +1,6 @@
 import type { EffectDrizzleSqlite } from "../database/drizzle.js"
 import { isNotNull, isNull, ne, or } from "drizzle-orm"
-import { sqliteTable, text, integer, primaryKey } from "drizzle-orm/sqlite-core"
+import { sqliteTable, text, integer, primaryKey, index } from "drizzle-orm/sqlite-core"
 import { absoluteArrayColumn, absoluteColumn } from "../database/path.js"
 import { Timestamps } from "../database/schema.sql.js"
 import type { AbsolutePath } from "../schema.js"
@@ -26,6 +26,22 @@ export const ProjectTable = sqliteTable("project", {
   sandboxes: absoluteArrayColumn().notNull(),
   commands: text({ mode: "json" }).$type<{ start?: string }>(),
 })
+
+export const ProjectAssociationTable = sqliteTable(
+  "project_association",
+  {
+    directory: absoluteColumn().primaryKey(),
+    project_id: text()
+      .$type<ProjectSchema.ID>()
+      .notNull()
+      .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    strategy: text(),
+    time_created: integer()
+      .notNull()
+      .$default(() => Date.now()),
+  },
+  (table) => [index("project_association_project_id_idx").on(table.project_id)],
+)
 
 /** @deprecated Use WorktreeTable from worktree/sql instead. */
 export const ProjectDirectoryTable = sqliteTable(

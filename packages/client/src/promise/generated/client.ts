@@ -156,6 +156,12 @@ import type {
   ProjectListOutput,
   ProjectUpdateInput,
   ProjectUpdateOutput,
+  ProjectDirectoriesInput,
+  ProjectDirectoriesOutput,
+  ProjectDirectoryCreateInput,
+  ProjectDirectoryCreateOutput,
+  ProjectDirectoryRemoveInput,
+  ProjectDirectoryRemoveOutput,
   FormListInput,
   FormListOutput,
   PermissionRequestListInput,
@@ -1444,6 +1450,41 @@ export function make(options: ClientOptions) {
               icon: input["icon"],
               commands: input["commands"],
             },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      directories: (input: ProjectDirectoriesInput, requestOptions?: RequestOptions) =>
+        request<ProjectDirectoriesOutput>(
+          {
+            method: "GET",
+            path: `/api/project/${encodeURIComponent(input.projectID)}/directories`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      directoryCreate: (input: ProjectDirectoryCreateInput, requestOptions?: RequestOptions) =>
+        request<ProjectDirectoryCreateOutput>(
+          {
+            method: "POST",
+            path: `/api/project/${encodeURIComponent(input.projectID)}/directories`,
+            body: { directory: input["directory"], strategy: input["strategy"] },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      directoryRemove: (input: ProjectDirectoryRemoveInput, requestOptions?: RequestOptions) =>
+        request<ProjectDirectoryRemoveOutput>(
+          {
+            method: "DELETE",
+            path: `/api/project/${encodeURIComponent(input.projectID)}/directories`,
+            query: { directory: input["directory"] },
             successStatus: 200,
             declaredStatuses: [400, 401, 404],
             empty: false,

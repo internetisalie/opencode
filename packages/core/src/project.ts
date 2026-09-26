@@ -14,7 +14,7 @@ import { AppProcess } from "@opencode/util/process"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Hash } from "@opencode/util/hash"
 import { ProjectSchema } from "./project/schema.js"
-import { ProjectTable, upsertProject } from "./project/sql.js"
+import { ProjectAssociationTable, ProjectTable, upsertProject } from "./project/sql.js"
 import { WorktreeTable } from "./worktree/sql.js"
 
 export const ID = ProjectSchema.ID
@@ -31,6 +31,15 @@ export interface Info extends Schema.Schema.Type<typeof Info> {}
 
 export const UpdateInput = ProjectSchema.UpdateInput
 export type UpdateInput = ProjectSchema.UpdateInput
+
+export const AssociateInput = ProjectSchema.AssociateInput
+export type AssociateInput = ProjectSchema.AssociateInput
+
+export const DissociateInput = ProjectSchema.DissociateInput
+export type DissociateInput = ProjectSchema.DissociateInput
+
+export const Directories = ProjectSchema.Directories
+export type Directories = ProjectSchema.Directories
 
 export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Project.NotFoundError", {
   projectID: ID,
@@ -62,6 +71,9 @@ const ACTIVATE_INTERVAL = 60_000
 export interface Interface {
   readonly list: () => Effect.Effect<ReadonlyArray<Info>>
   readonly update: (input: UpdateInput) => Effect.Effect<Info, NotFoundError>
+  readonly directories: (projectID: ID) => Effect.Effect<Directories, NotFoundError>
+  readonly associate: (input: AssociateInput) => Effect.Effect<Directories, NotFoundError>
+  readonly dissociate: (input: DissociateInput) => Effect.Effect<Directories, NotFoundError>
   /** Records Project activity for recency ordering, at most once per minute per Project. */
   readonly activate: (projectID: ID) => Effect.Effect<void>
   /** Resolves and persists the owning Project. */
@@ -238,6 +250,66 @@ const layer = Layer.effect(
       return project
     })
 
+    const directories = Effect.fn("Project.directories")(function* (projectID: ID) {
+      const known = yield* db
+        .select({ id: ProjectTable.id })
+        .from(ProjectTable)
+        .where(eq(ProjectTable.id, projectID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!known) return yield* new NotFoundError({ projectID })
+      const recorded = yield* db
+        .select({ directory: WorktreeTable.directory, strategy: WorktreeTable.strategy })
+        .from(WorktreeTable)
+        .where(eq(WorktreeTable.project_id, projectID))
+        .orderBy(desc(WorktreeTable.time_created), asc(WorktreeTable.directory))
+        .all()
+        .pipe(Effect.orDie)
+      const associated = yield* db
+        .select({ directory: ProjectAssociationTable.directory, strategy: ProjectAssociationTable.strategy })
+        .from(ProjectAssociationTable)
+        .where(eq(ProjectAssociationTable.project_id, projectID))
+        .orderBy(asc(ProjectAssociationTable.directory))
+        .all()
+        .pipe(Effect.orDie)
+      const seen = new Set(recorded.map((item) => item.directory))
+      return [...recorded, ...associated.filter((item) => !seen.has(item.directory))].map((item) => ({
+        directory: item.directory,
+        strategy: item.strategy ?? undefined,
+      }))
+    })
+
+    const associate = Effect.fn("Project.associate")(function* (input: AssociateInput) {
+      const directory = AbsolutePath.make(yield* fs.resolve(input.directory))
+      yield* directories(input.projectID)
+      yield* db
+        .insert(ProjectAssociationTable)
+        .values({ project_id: input.projectID, directory, strategy: input.strategy })
+        .onConflictDoUpdate({
+          target: ProjectAssociationTable.directory,
+          set: { project_id: input.projectID, strategy: input.strategy ?? null },
+        })
+        .run()
+        .pipe(Effect.orDie)
+      return yield* directories(input.projectID)
+    })
+
+    const dissociate = Effect.fn("Project.dissociate")(function* (input: DissociateInput) {
+      const directory = AbsolutePath.make(yield* fs.resolve(input.directory))
+      yield* directories(input.projectID)
+      yield* db
+        .delete(ProjectAssociationTable)
+        .where(
+          and(
+            eq(ProjectAssociationTable.project_id, input.projectID),
+            eq(ProjectAssociationTable.directory, directory),
+          ),
+        )
+        .run()
+        .pipe(Effect.orDie)
+      return yield* directories(input.projectID)
+    })
+
     const activated = new Map<ID, number>()
     const activate = Effect.fn("Project.activate")(function* (projectID: ID) {
       const now = Date.now()
@@ -374,6 +446,28 @@ const layer = Layer.effect(
         })
       }
 
+      const association = yield* db
+        .select({ projectID: ProjectAssociationTable.project_id })
+        .from(ProjectAssociationTable)
+        .where(eq(ProjectAssociationTable.directory, directory))
+        .get()
+        .pipe(Effect.orDie)
+      if (association) {
+        const owner = yield* db
+          .select({ canonical: ProjectTable.worktree })
+          .from(ProjectTable)
+          .where(eq(ProjectTable.id, association.projectID))
+          .get()
+          .pipe(Effect.orDie)
+        if (owner)
+          return {
+            id: association.projectID,
+            directory,
+            canonical: owner.canonical,
+            vcs: undefined,
+          }
+      }
+
       return yield* persist({
         id: ID.make(Hash.fast(`directory:${directory}`)),
         directory,
@@ -382,7 +476,7 @@ const layer = Layer.effect(
       })
     })
 
-    return Service.of({ list, update, activate, resolve })
+    return Service.of({ list, update, directories, associate, dissociate, activate, resolve })
   }),
 )
 

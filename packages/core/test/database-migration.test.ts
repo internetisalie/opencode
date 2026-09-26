@@ -15,6 +15,7 @@ import { Database } from "@opencode/core/database/database"
 import { tmpdir } from "./fixture/tmpdir"
 import legacyCredentialsMigration from "@opencode/core/database/migration/20260805200742_import_legacy_credentials"
 import worktreeMigration from "@opencode/core/database/migration/20260812213948_worktree"
+import projectAssociationMigration from "@opencode/core/database/migration/20260926002438_project-association"
 import previousV2Migration from "@opencode/core/database/migration/20260804233008_loose_psylocke"
 import workspaceMigration from "@opencode/core/database/migration/20260808023530_workspace_domain"
 import executionClaimsMigration from "@opencode/core/database/migration/20260811161259_execution_claim_attempts"
@@ -426,6 +427,33 @@ describe("DatabaseMigration", () => {
           { directory: "/strategy", strategy: "git" },
         ])
         expect(yield* db.get(sql`SELECT count(*) AS count FROM project_directory`)).toEqual({ count: 4 })
+      }),
+    )
+  })
+
+  test("moves explicit associations out of legacy worktree rows and survives a restart", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE project (id text PRIMARY KEY)`)
+        yield* db.run(sql`INSERT INTO project VALUES ('owner')`)
+        yield* db.run(
+          sql`CREATE TABLE project_directory (project_id text NOT NULL, directory text NOT NULL, type text, strategy text, time_created integer NOT NULL, PRIMARY KEY (project_id, directory))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO project_directory VALUES ('owner', '/associated', 'association', 'loom', 2), ('owner', '/git', 'git_worktree', 'git', 3)`,
+        )
+        yield* DatabaseMigration.applyOnly(db, [worktreeMigration, projectAssociationMigration])
+        expect(yield* db.all(sql`SELECT directory, project_id, strategy FROM project_association`)).toEqual([
+          { directory: "/associated", project_id: "owner", strategy: "loom" },
+        ])
+        expect(yield* db.all(sql`SELECT directory FROM worktree`)).toEqual([{ directory: "/git" }])
+        expect(yield* db.all(sql`SELECT directory FROM project_directory`)).toEqual([{ directory: "/git" }])
+
+        yield* DatabaseMigration.applyOnly(db, [worktreeMigration, projectAssociationMigration])
+        expect(yield* db.get(sql`SELECT project_id FROM project_association WHERE directory = '/associated'`)).toEqual({
+          project_id: "owner",
+        })
       }),
     )
   })
