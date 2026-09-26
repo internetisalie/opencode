@@ -42,6 +42,7 @@ import { EventLog } from "@opencode/schema/event-log"
 import { FileDiff } from "@opencode/schema/file-diff"
 import { Form } from "@opencode/schema/form"
 import { PublicSessionMessage } from "./message.js"
+import { SessionOwnership } from "../middleware/session-ownership.js"
 
 const ParentIDFilter = Schema.Union([
   Session.ID,
@@ -170,12 +171,10 @@ export const SessionsQuery = Schema.Struct({
   cursor: SessionsQueryCursor.pipe(Schema.optional),
 }).annotate({ identifier: "SessionsQuery" })
 
-export const makeSessionGroup = <
-  I extends HttpApiMiddleware.AnyId,
-  S,
-  FormI extends HttpApiMiddleware.AnyId,
-  FormS,
->(sessionLocationMiddleware: Context.Key<I, S>, formLocationMiddleware: Context.Key<FormI, FormS>) =>
+export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI extends HttpApiMiddleware.AnyId, FormS>(
+  sessionLocationMiddleware: Context.Key<I, S>,
+  formLocationMiddleware: Context.Key<FormI, FormS>,
+) =>
   HttpApiGroup.make("server.session")
     .add(
       HttpApiEndpoint.get("session.list", "/api/session", {
@@ -250,6 +249,24 @@ export const makeSessionGroup = <
           summary: "Import session",
           description:
             "Import a projected session transcript at the requested location. If parentID is supplied, the parent session must already exist; import parents before children.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.mirror", "/api/experimental/session/mirror", {
+        payload: Schema.Struct({
+          ...PublicSessionTransfer.fields,
+          source: Schema.NonEmptyString,
+          location: Location.PublicRef.pipe(Schema.optional),
+        }),
+        success: Schema.Struct({ data: PublicSessionInfo }),
+        error: [ConflictError, SessionNotFoundError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "experimental.session.mirror",
+          summary: "Mirror a leaf-owned session",
+          description:
+            "Idempotently ingest a settled session transcript from a stable external source. Existing local sessions and divergent transcripts are rejected.",
         }),
       ),
     )
@@ -559,9 +576,7 @@ export const makeSessionGroup = <
         error: [SessionNotFoundError, SessionBusyError],
       })
         .middleware(sessionLocationMiddleware)
-        .annotateMerge(
-          OpenApi.annotations({ identifier: "session.revert.commit", summary: "Commit staged revert" }),
-        ),
+        .annotateMerge(OpenApi.annotations({ identifier: "session.revert.commit", summary: "Commit staged revert" })),
     )
     .add(
       HttpApiEndpoint.get("session.context", "/api/session/:sessionID/context", {
@@ -895,6 +910,7 @@ export const makeSessionGroup = <
         }),
       ),
     )
+    .middleware(SessionOwnership)
     .annotateMerge(
       OpenApi.annotations({
         title: "session",

@@ -19,6 +19,7 @@ import { Worktree } from "@opencode/core/worktree"
 import { Session } from "@opencode/core/session"
 import { Instance } from "@opencode/core/instance/service"
 import { SessionTransfer } from "@opencode/core/session/transfer"
+import { SessionStore } from "@opencode/core/session/store"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { Job } from "@opencode/core/job"
 import { Mcp } from "@opencode/core/mcp/index"
@@ -47,6 +48,7 @@ import { ServerPairing } from "./pairing"
 import { layer } from "./location"
 import { formLocationLayer } from "./middleware/form-location"
 import { sessionLocationLayer } from "./middleware/session-location"
+import { sessionOwnershipLayer } from "./middleware/session-ownership"
 import { ServerInfo } from "./server-info"
 import { pluginRoutes } from "./plugin-routes"
 import type { ServerOptions } from "./options"
@@ -62,6 +64,7 @@ const applicationServiceNodes = [
   Project.node,
   Worktree.node,
   Session.node,
+  SessionStore.node,
   Instance.node,
   SessionTransfer.node,
   SdkPlugins.node,
@@ -189,6 +192,7 @@ function makeRoutes<AuthError, AuthServices>(
         Layer.provide(handlers.pipe(Layer.provide(services), Layer.provide(Layer.succeed(CorsConfig, options)))),
         Layer.provide(formLocationLayer),
         Layer.provide(sessionLocationLayer),
+        Layer.provide(sessionOwnershipLayer),
         Layer.provide(layer),
         Layer.provide(authorizationLayer),
         Layer.provide(schemaErrorLayer),

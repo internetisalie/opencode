@@ -30,6 +30,8 @@ import type {
   SessionCreateOutput,
   SessionImportInput,
   SessionImportOutput,
+  SessionMirrorInput,
+  SessionMirrorOutput,
   SessionExportInput,
   SessionExportOutput,
   SessionActiveOutput,
@@ -419,6 +421,21 @@ const EndpointSessionImport = (raw: RawClient["server.session"]) => (input: Sess
     ),
   )
 
+const EndpointSessionMirror = (raw: RawClient["server.session"]) => (input: SessionMirrorInput) =>
+  preserveEffect<SessionMirrorOutput>()(
+    raw["session.mirror"]({
+      payload: {
+        info: input["info"],
+        messages: input["messages"],
+        source: input["source"],
+        location: input["location"],
+      },
+    }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
 const EndpointSessionExport = (raw: RawClient["server.session"]) => (input: SessionExportInput) =>
   preserveEffect<SessionExportOutput>()(
     raw["session.export"]({ params: { sessionID: input["sessionID"] }, query: { sanitize: input["sanitize"] } }).pipe(
@@ -763,6 +780,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   stats: EndpointSessionStats(raw),
   create: EndpointSessionCreate(raw),
   import: EndpointSessionImport(raw),
+  mirror: EndpointSessionMirror(raw),
   export: EndpointSessionExport(raw),
   active: EndpointSessionActive(raw),
   get: EndpointSessionGet(raw),

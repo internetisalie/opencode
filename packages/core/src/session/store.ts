@@ -13,6 +13,7 @@ import { SessionMessage } from "./message.js"
 import { Session } from "@opencode/schema/session"
 import { SessionMessageTable, SessionTable } from "./sql.js"
 import { fromRow } from "./info.js"
+import { EventSequenceTable } from "../event/sql.js"
 
 const ListInputBase = {
   workspaceID: Workspace.ID.pipe(Schema.optional),
@@ -52,6 +53,8 @@ export type MessagesInput = {
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
+  /** Mirrored Sessions are projections of a leaf and cannot execute here. */
+  readonly isMirror: (sessionID: Session.ID) => Effect.Effect<boolean>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
@@ -95,6 +98,15 @@ const layer = Layer.effect(
       get: Effect.fnUntraced(function* (sessionID) {
         const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
         return row ? fromRow(row) : undefined
+      }),
+      isMirror: Effect.fnUntraced(function* (sessionID) {
+        const row = yield* db
+          .select({ owner: EventSequenceTable.owner_id })
+          .from(EventSequenceTable)
+          .where(eq(EventSequenceTable.aggregate_id, sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        return row?.owner?.startsWith("mirror:") ?? false
       }),
       list: Effect.fn("SessionStore.list")(function* (input = {}) {
         const direction = input.anchor?.direction ?? "next"

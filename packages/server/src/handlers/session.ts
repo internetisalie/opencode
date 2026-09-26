@@ -176,6 +176,26 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         }),
       )
       .handle(
+        "session.mirror",
+        Effect.fn(function* (ctx) {
+          return {
+            data: yield* transfer
+              .mirror({
+                source: ctx.payload.source,
+                data: { info: ctx.payload.info, messages: ctx.payload.messages },
+                location: ctx.payload.location ?? ctx.payload.info.location,
+              })
+              .pipe(
+                Effect.catchTag("Session.NotFoundError", missingSession),
+                Effect.catchTag(
+                  "SessionTransfer.MirrorConflictError",
+                  (error) => new ConflictError({ message: error.reason, resource: error.sessionID }),
+                ),
+              ),
+          }
+        }),
+      )
+      .handle(
         "session.active",
         Effect.fn(function* () {
           const active = yield* session.active

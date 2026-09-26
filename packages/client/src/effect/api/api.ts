@@ -216,6 +216,15 @@ export type SessionImportInput = {
 export type SessionImportOutput = Session.Info
 export type SessionImportOperation<E = never> = (input: SessionImportInput) => Effect.Effect<SessionImportOutput, E>
 
+export type SessionMirrorInput = {
+  readonly info: Session.Info
+  readonly messages: ReadonlyArray<SessionMessage.Info>
+  readonly source: string
+  readonly location?: Location.PublicRef | undefined
+}
+export type SessionMirrorOutput = Session.Info
+export type SessionMirrorOperation<E = never> = (input: SessionMirrorInput) => Effect.Effect<SessionMirrorOutput, E>
+
 export type SessionExportInput = { readonly sessionID: Session.ID; readonly sanitize?: boolean | undefined }
 export type SessionExportOutput = { readonly info: Session.Info; readonly messages: ReadonlyArray<SessionMessage.Info> }
 export type SessionExportOperation<E = never> = (input: SessionExportInput) => Effect.Effect<SessionExportOutput, E>
@@ -1413,6 +1422,7 @@ export interface SessionApi<E = never> {
   readonly stats: SessionStatsOperation<E>
   readonly create: SessionCreateOperation<E>
   readonly import: SessionImportOperation<E>
+  readonly mirror: SessionMirrorOperation<E>
   readonly export: SessionExportOperation<E>
   readonly active: SessionActiveOperation<E>
   readonly get: SessionGetOperation<E>
