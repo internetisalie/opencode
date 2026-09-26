@@ -20,18 +20,21 @@ jobs:
     if: github.repository == 'internetisalie/opencode'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      TMPDIR: ${{ github.workspace }}/.ci-scratch/tmp
-      TMP: ${{ github.workspace }}/.ci-scratch/tmp
-      TEMP: ${{ github.workspace }}/.ci-scratch/tmp
-      XDG_CACHE_HOME: ${{ github.workspace }}/.ci-scratch/cache
-      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.ci-scratch/bun
-      NODE_COMPILE_CACHE: ${{ github.workspace }}/.ci-scratch/node
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Prepare scratch directories
-        run: mkdir -p .ci-scratch/{tmp,cache,bun,node}
+        run: |
+          scratch="$RUNNER_TEMP/opencode-fork"
+          mkdir -p "$scratch"/{tmp,cache,bun,node}
+          {
+            echo "TMPDIR=$scratch/tmp"
+            echo "TMP=$scratch/tmp"
+            echo "TEMP=$scratch/tmp"
+            echo "XDG_CACHE_HOME=$scratch/cache"
+            echo "BUN_INSTALL_CACHE_DIR=$scratch/bun"
+            echo "NODE_COMPILE_CACHE=$scratch/node"
+          } >> "$GITHUB_ENV"
 
       - uses: ./.github/actions/setup-bun
 
@@ -96,15 +99,18 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      TMPDIR: ${{ github.workspace }}/.ci-scratch/tmp
-      TMP: ${{ github.workspace }}/.ci-scratch/tmp
-      TEMP: ${{ github.workspace }}/.ci-scratch/tmp
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Prepare scratch directories
-        run: mkdir -p .ci-scratch/tmp
+        run: |
+          scratch="$RUNNER_TEMP/opencode-fork"
+          mkdir -p "$scratch/tmp"
+          {
+            echo "TMPDIR=$scratch/tmp"
+            echo "TMP=$scratch/tmp"
+            echo "TEMP=$scratch/tmp"
+          } >> "$GITHUB_ENV"
 
       - name: Restore the tested binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
