@@ -921,6 +921,15 @@ export type SessionUsageUpdated = {
   data: { sessionID: string; cost: MoneyUSD; tokens: TokenUsageInfo }
 }
 
+export type SessionMirrorUpdated = {
+  id: string
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.mirror.updated"
+  location?: LocationRef
+  data: { sessionID: string }
+}
+
 export type SessionTextDelta = {
   id: string
   created: number
@@ -2395,6 +2404,7 @@ export type V2Event =
   | SessionPermissions
   | SessionViewed
   | SessionUsageUpdated
+  | SessionMirrorUpdated
   | SessionDeleted
   | SessionForked
   | SessionInboxDelivered

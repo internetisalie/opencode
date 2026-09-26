@@ -190,14 +190,17 @@ const layer = Layer.effect(
           .where(eq(SessionTable.id, sessionID))
           .get()
           .pipe(Effect.orDie)
-        if (!current)
-          return yield* importSession(input).pipe(
+        if (!current) {
+          const imported = yield* importSession(input).pipe(
             Effect.catchTag(
               "SessionTransfer.ImportConflictError",
               () => new MirrorConflictError({ sessionID, reason: "Session was created concurrently" }),
             ),
           )
-        yield* db
+          if (input.data.messages.some(isSettled)) yield* bus.publish(SessionEvent.MirrorUpdated, { sessionID })
+          return imported
+        }
+        const appended = yield* db
           .transaction(() =>
             Effect.gen(function* () {
               const recorded = yield* db
@@ -288,11 +291,13 @@ const layer = Layer.effect(
                 .where(eq(SessionTable.id, sessionID))
                 .run()
                 .pipe(Effect.orDie)
+              return suffix.length > 0
             }),
           )
           .pipe(
             Effect.catch((error) => (error instanceof MirrorConflictError ? Effect.fail(error) : Effect.die(error))),
           )
+        if (appended) yield* bus.publish(SessionEvent.MirrorUpdated, { sessionID })
         return yield* sessions.get(sessionID).pipe(Effect.orDie)
       }),
     })
