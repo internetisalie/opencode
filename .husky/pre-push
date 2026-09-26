@@ -17,4 +17,5 @@ if (process.versions.bun !== expectedBunVersion) {
   console.warn(`Warning: Bun version ${process.versions.bun} differs from expected ${expectedBunVersion}`);
 }
 '
-bun run check
+bun run lint
+bun turbo typecheck --concurrency=2
