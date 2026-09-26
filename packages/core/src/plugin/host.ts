@@ -34,6 +34,7 @@ import { WorktreeStrategies } from "../worktree/strategies.js"
 import { Generate } from "../generate.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "./hooks.js"
+import { PluginHttp } from "./http.js"
 import type { Interface } from "../plugin.js"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 
@@ -68,6 +69,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const generate = yield* Generate.Service
   const permission = yield* Permission.Service
   const hooks = yield* PluginHooks.Service
+  const http = yield* PluginHttp.Service
   const sessions = yield* Session.Service
   const persistentPty = yield* PersistentPty.Service
   const locations = yield* LocationServiceMap.Service
@@ -419,6 +421,9 @@ export const make = Effect.fn("PluginHost.make")(function* (
     plugin: {
       list: () => response(plugin.list()),
     },
+    http: {
+      register: (handler) => http.register(pluginID, handler),
+    },
     reference: {
       list: () => response(reference.list()),
       reload: reference.reload,
@@ -576,6 +581,7 @@ export const requirements = LayerNode.group([
   Generate.node,
   Permission.node,
   PluginHooks.node,
+  PluginHttp.node,
   Session.node,
   PersistentPty.node,
   LocationServiceMap.node,

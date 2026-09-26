@@ -20,6 +20,7 @@ import { Model } from "@opencode/core/model"
 import { Npm } from "@opencode/util/npm"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
+import { PluginHttp } from "@opencode/core/plugin/http"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
 import { PersistentPty } from "@opencode/core/persistent-pty"
@@ -93,6 +94,7 @@ export const PluginTestLayer = AppNodeBuilder.build(
     LocationServiceMap.node,
     Permission.node,
     PluginHooks.node,
+    PluginHttp.node,
     Reference.node,
     Rpc.node,
     Skill.node,

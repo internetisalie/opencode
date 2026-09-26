@@ -292,6 +292,7 @@ export function fromPromise(plugin: Plugin) {
           app: host.app,
           location: host.location,
           options: host.options,
+          http: { register: (handler) => register(host.http.register(handler)) },
           agent: {
             get: adaptApiMethod(AgentEndpoints["agent.get"], host.agent.get),
             list: adaptApiMethod(AgentEndpoints["agent.list"], host.agent.list),

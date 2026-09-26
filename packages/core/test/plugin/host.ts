@@ -28,6 +28,9 @@ export function host(overrides: Overrides = {}): Plugin.Context {
         },
       }),
     options: {},
+    http: overrides.http ?? {
+      register: () => Effect.die("unused http.register"),
+    },
     rpc:
       overrides.rpc ??
       Object.assign(

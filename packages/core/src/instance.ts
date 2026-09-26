@@ -25,6 +25,7 @@ import { Mcp } from "./mcp/index.js"
 import { Permission } from "./permission.js"
 import { Plugin } from "./plugin.js"
 import { PluginHooks } from "./plugin/hooks.js"
+import { PluginHttp } from "./plugin/http.js"
 import { InstancePlugins } from "./plugin/instance.js"
 import { PluginSupervisor } from "./plugin/supervisor.js"
 import { WorktreeStrategies } from "./worktree/strategies.js"
@@ -73,6 +74,7 @@ const nodes = [
   AISDK.node,
   Plugin.node,
   PluginHooks.node,
+  PluginHttp.node,
   InstancePlugins.node,
   PluginSupervisor.node,
   WorktreeStrategies.node,

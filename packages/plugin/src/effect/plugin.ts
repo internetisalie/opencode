@@ -8,6 +8,7 @@ import type { AISDKDomain } from "./aisdk.js"
 import type { CommandDomain } from "./command.js"
 import type { EventDomain } from "./event.js"
 import type { IntegrationDomain } from "./integration.js"
+import type { HttpDomain } from "./http.js"
 import type { MCPDomain } from "./mcp.js"
 import type { ModelDomain } from "./model.js"
 import type { PermissionDomain } from "./permission.js"
@@ -35,6 +36,7 @@ export interface Context {
     readonly terminal: Pick<ExperimentalApi<unknown>["persistentPty"], "read">
   }
   readonly integration: IntegrationDomain
+  readonly http: HttpDomain
   readonly mcp: MCPDomain
   readonly model: ModelDomain
   readonly generate: GenerateApi<unknown>

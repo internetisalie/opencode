@@ -48,6 +48,7 @@ import { layer } from "./location"
 import { formLocationLayer } from "./middleware/form-location"
 import { sessionLocationLayer } from "./middleware/session-location"
 import { ServerInfo } from "./server-info"
+import { pluginRoutes } from "./plugin-routes"
 import type { ServerOptions } from "./options"
 
 const applicationServiceNodes = [
@@ -91,6 +92,7 @@ export function createRoutes(
     options,
     serviceURLs,
     overrides,
+    true,
   )
 }
 
@@ -103,7 +105,14 @@ export function createEmbeddedRoutes(
   overrides: LayerNode.Replacements = [],
   instances?: InstanceNode,
 ) {
-  return makeRoutes(ServerAuth.Config.configLayer({ password: Option.none() }), options, () => [], overrides, instances)
+  return makeRoutes(
+    ServerAuth.Config.configLayer({ password: Option.none() }),
+    options,
+    () => [],
+    overrides,
+    false,
+    instances,
+  )
 }
 
 function makeRoutes<AuthError, AuthServices>(
@@ -112,6 +121,7 @@ function makeRoutes<AuthError, AuthServices>(
   serviceURLs: () => ReadonlyArray<string>,
   // Runtime-profile replacements (e.g. workerd) applied after the standard set, so later entries win.
   overrides: LayerNode.Replacements,
+  authenticated: boolean,
   instances?: InstanceNode,
 ) {
   const standard: LayerNode.Replacements = [
@@ -187,7 +197,11 @@ function makeRoutes<AuthError, AuthServices>(
         Layer.provideMerge(services),
         Layer.provideMerge(HttpRouter.layer),
       )
-      return Layer.merge(api, V1Migration.layer.pipe(Layer.provide(services)))
+      const plugin = pluginRoutes(
+        Context.get(context, LocationServiceMap.Service),
+        authenticated ? Option.fromNullishOr(options.password) : Option.none(),
+      ).pipe(Layer.provideMerge(api))
+      return Layer.merge(plugin, V1Migration.layer.pipe(Layer.provide(services)))
     }),
   )
 }
