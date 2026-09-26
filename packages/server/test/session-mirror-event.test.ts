@@ -7,7 +7,7 @@ import { ServerFetch } from "../src/fetch"
 
 const SessionResponse = Schema.Struct({ data: Schema.toEncoded(Session.Info) })
 
-it.live("announces appended mirror history over SSE but stays quiet for an identical snapshot", () =>
+it.live("announces mirrored messages and metadata over SSE but stays quiet for an identical snapshot", () =>
   Effect.gen(function* () {
     const handler = yield* ServerFetch.make({
       app: { version: "test" },
@@ -62,7 +62,28 @@ it.live("announces appended mirror history over SSE but stays quiet for an ident
     })
     expect(update.data.sessionID).toBe(id)
 
-    yield* post("/api/experimental/session/mirror", snapshot)
+    const metadata = {
+      ...snapshot,
+      info: {
+        ...snapshot.info,
+        title: "Renamed on the leaf",
+        time: { ...snapshot.info.time, updated: snapshot.info.time.updated + 1000 },
+      },
+    }
+    yield* post("/api/experimental/session/mirror", metadata)
+    const metadataUpdate = yield* Effect.promise(async () => {
+      for (;;) {
+        const event = await next()
+        if (event.type === "session.mirror.updated") return event
+      }
+    })
+    expect(metadataUpdate.data.sessionID).toBe(id)
+    const read = yield* Effect.promise(() => handler(new Request(`http://opencode.local/api/session/${id}`)))
+    expect(Schema.decodeUnknownSync(SessionResponse)(yield* Effect.promise(() => read.json())).data.title).toBe(
+      "Renamed on the leaf",
+    )
+
+    yield* post("/api/experimental/session/mirror", metadata)
     const sentinel = Schema.decodeUnknownSync(SessionResponse)(yield* post("/api/session", { title: "Sentinel" }))
     yield* Effect.promise(async () => {
       for (;;) {

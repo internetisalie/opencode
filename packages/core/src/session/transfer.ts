@@ -200,7 +200,7 @@ const layer = Layer.effect(
           if (input.data.messages.some(isSettled)) yield* bus.publish(SessionEvent.MirrorUpdated, { sessionID })
           return imported
         }
-        const appended = yield* db
+        const previous = yield* db
           .transaction(() =>
             Effect.gen(function* () {
               const recorded = yield* db
@@ -291,14 +291,16 @@ const layer = Layer.effect(
                 .where(eq(SessionTable.id, sessionID))
                 .run()
                 .pipe(Effect.orDie)
-              return suffix.length > 0
+              return { info, appended: suffix.length > 0 }
             }),
           )
           .pipe(
             Effect.catch((error) => (error instanceof MirrorConflictError ? Effect.fail(error) : Effect.die(error))),
           )
-        if (appended) yield* bus.publish(SessionEvent.MirrorUpdated, { sessionID })
-        return yield* sessions.get(sessionID).pipe(Effect.orDie)
+        const mirrored = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        if (previous.appended || !isDeepStrictEqual(previous.info, mirrored))
+          yield* bus.publish(SessionEvent.MirrorUpdated, { sessionID })
+        return mirrored
       }),
     })
   }),
