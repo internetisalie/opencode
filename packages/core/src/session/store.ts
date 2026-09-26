@@ -53,6 +53,7 @@ export type MessagesInput = {
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
+  readonly mirrorSource: (sessionID: Session.ID) => Effect.Effect<string | undefined>
   /** Mirrored Sessions are projections of a leaf and cannot execute here. */
   readonly isMirror: (sessionID: Session.ID) => Effect.Effect<boolean>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
@@ -93,21 +94,23 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
+    const mirrorSource = Effect.fnUntraced(function* (sessionID: Session.ID) {
+      const row = yield* db
+        .select({ owner: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      return row?.owner?.startsWith("mirror:") ? row.owner.slice("mirror:".length) : undefined
+    })
 
     return Service.of({
       get: Effect.fnUntraced(function* (sessionID) {
         const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
         return row ? fromRow(row) : undefined
       }),
-      isMirror: Effect.fnUntraced(function* (sessionID) {
-        const row = yield* db
-          .select({ owner: EventSequenceTable.owner_id })
-          .from(EventSequenceTable)
-          .where(eq(EventSequenceTable.aggregate_id, sessionID))
-          .get()
-          .pipe(Effect.orDie)
-        return row?.owner?.startsWith("mirror:") ?? false
-      }),
+      mirrorSource,
+      isMirror: (sessionID) => mirrorSource(sessionID).pipe(Effect.map((source) => source !== undefined)),
       list: Effect.fn("SessionStore.list")(function* (input = {}) {
         const direction = input.anchor?.direction ?? "next"
         const requestedOrder = input.order ?? "desc"

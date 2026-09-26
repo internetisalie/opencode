@@ -3,6 +3,7 @@ export * as ServerProcess from "./process"
 import { NodeHttpServer } from "@effect/platform-node"
 import { Bus } from "@opencode/core/bus"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
+import { SessionStore } from "@opencode/core/session/store"
 import { InstallationEvent } from "@opencode/schema/installation-event"
 import { hasPtyConnectTicketURL } from "@opencode/protocol/groups/pty"
 import { hasPersistentPtyConnectTicketURL } from "@opencode/protocol/groups/persistent-pty"
@@ -16,6 +17,7 @@ import { isAllowedCorsOrigin } from "./cors"
 import { authorizedRequest, unauthorizedResponse } from "./middleware/authorization"
 import { withoutParentSpan } from "./request-tracing"
 import { createRoutes } from "./routes"
+import { forwardMirroredSession } from "./middleware/remote-session"
 import { ServerInfo } from "./server-info"
 import { Status } from "./service-status"
 import type { ServerOptions } from "./options"
@@ -106,7 +108,17 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
         Effect.provideService(Scope.Scope, applicationScope),
       )
     }
-    yield* Ref.set(application, Option.some(Context.get(context, HttpRouter.HttpRouter).asHttpEffect()))
+    yield* Ref.set(
+      application,
+      Option.some(
+        forwardMirroredSession(
+          Context.get(context, HttpRouter.HttpRouter).asHttpEffect(),
+          options.remoteProxy,
+          Context.get(context, SessionStore.Service),
+          password,
+        ),
+      ),
+    )
     yield* status.ready
     const bus = Context.get(context, Bus.Service)
     return {
