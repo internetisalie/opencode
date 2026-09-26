@@ -72,8 +72,12 @@ jobs:
             export OPENCODE_VERSION="$(node -p "require('./package.json').version")-internetisalie.${GITHUB_SHA:0:12}"
           fi
           export OPENCODE_CHANNEL=internetisalie-v2
-          bun run script/build.ts --target=linux-x64-baseline-musl --skip-install --skip-web-ui
-          dist/cli-linux-x64-baseline-musl/bin/opencode --version
+          bun run script/build.ts --target=opencode-linux-x64-baseline-musl --skip-install --skip-web-ui
+
+      - name: Smoke test the server image
+        run: |
+          docker build -f packages/cli/Dockerfile.server -t opencode-fork-server:smoke packages/cli
+          docker run --rm --entrypoint /usr/local/bin/opencode opencode-fork-server:smoke --version
 
       - name: Save the tested binary for the image job
         if: github.event_name == 'push'
