@@ -1,0 +1,147 @@
+name: fork server
+
+on:
+  pull_request:
+    branches: [internetisalie-v2]
+  push:
+    branches: [internetisalie-v2]
+    tags: ["v2.*-internetisalie.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-server-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-server:
+    if: github.repository == 'internetisalie/opencode'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TMPDIR: ${{ github.workspace }}/.ci-scratch/tmp
+      TMP: ${{ github.workspace }}/.ci-scratch/tmp
+      TEMP: ${{ github.workspace }}/.ci-scratch/tmp
+      XDG_CACHE_HOME: ${{ github.workspace }}/.ci-scratch/cache
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.ci-scratch/bun
+      NODE_COMPILE_CACHE: ${{ github.workspace }}/.ci-scratch/node
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Prepare scratch directories
+        run: mkdir -p .ci-scratch/{tmp,cache,bun,node}
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: Typecheck changed server packages sequentially
+        run: |
+          for package in plugin core server; do
+            (cd "packages/$package" && bun typecheck)
+          done
+
+      - name: Test project and session core
+        working-directory: packages/core
+        run: |
+          bun test test/project.test.ts
+          bun test test/session-owned.test.ts
+
+      - name: Test plugin host
+        working-directory: packages/plugin
+        run: bun test test/host.test.ts
+
+      - name: Test server routes and session handoff
+        working-directory: packages/server
+        run: |
+          for test in \
+            test/project-directory.test.ts \
+            test/plugin-routes.test.ts \
+            test/session-import.test.ts \
+            test/session-mirror-event.test.ts \
+            test/session-remote.test.ts; do
+            bun test "$test"
+          done
+
+      - name: Build the Linux server binary
+        working-directory: packages/cli
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            export OPENCODE_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            export OPENCODE_VERSION="$(node -p "require('./package.json').version")-internetisalie.${GITHUB_SHA:0:12}"
+          fi
+          export OPENCODE_CHANNEL=internetisalie-v2
+          bun run script/build.ts --target=linux-x64-baseline-musl --skip-install --skip-web-ui
+          dist/cli-linux-x64-baseline-musl/bin/opencode --version
+
+      - name: Save the tested binary for the image job
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opencode-fork-server-linux-amd64
+          path: packages/cli/dist/cli-linux-x64-baseline-musl
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-image:
+    if: github.repository == 'internetisalie/opencode' && github.event_name == 'push'
+    needs: linux-server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TMPDIR: ${{ github.workspace }}/.ci-scratch/tmp
+      TMP: ${{ github.workspace }}/.ci-scratch/tmp
+      TEMP: ${{ github.workspace }}/.ci-scratch/tmp
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Prepare scratch directories
+        run: mkdir -p .ci-scratch/tmp
+
+      - name: Restore the tested binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: opencode-fork-server-linux-amd64
+          path: packages/cli/dist/cli-linux-x64-baseline-musl
+
+      - name: Set image tags
+        id: image
+        shell: bash
+        run: |
+          image=ghcr.io/internetisalie/opencode-stable
+          {
+            echo 'tags<<EOF'
+            echo "$image:sha-${GITHUB_SHA:0:12}"
+            if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+              echo "$image:$GITHUB_REF_NAME"
+            else
+              echo "$image:internetisalie-v2"
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish server image from the tested binary
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: packages/cli
+          file: packages/cli/Dockerfile.server
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/internetisalie/opencode
+            org.opencontainers.image.revision=${{ github.sha }}
