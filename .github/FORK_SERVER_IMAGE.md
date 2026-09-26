@@ -2,7 +2,7 @@
 
 The `fork server` workflow runs for pull requests targeting `internetisalie-v2`, pushes to that branch, and tags matching `v2.*-internetisalie.*`. Manual runs validate and build but do not publish.
 
-One Linux job typechecks `plugin`, `core`, and `server` in sequence, then runs the relevant project, session, plugin, and route tests one file at a time. It compiles one `linux-x64-baseline-musl` CLI binary using `packages/cli/script/build.ts` with `--skip-web-ui`; OpenChamber supplies the UI in this deployment. The server image builds from that tested binary, using `packages/cli/Dockerfile.server`; Docker does not compile OpenCode again. The image includes Bash, Git, and ripgrep, listens on port 4096, and starts `opencode serve`.
+One Linux job typechecks `plugin`, `core`, and `server` in sequence, then runs the relevant project, session, plugin, and route tests one file at a time. It compiles one `opencode-linux-x64-baseline-musl` CLI target using `packages/cli/script/build.ts` with `--skip-web-ui`; OpenChamber supplies the UI in this deployment. The job builds a disposable Docker image and runs the binary's version check inside Alpine, where the musl runtime is available. The published server image uses that same binary; Docker does not compile OpenCode again. The image includes Bash, Git, and ripgrep, listens on port 4096, and starts `opencode serve`.
 
 Only successful pushes to the fork publish `ghcr.io/internetisalie/opencode-stable`:
 
