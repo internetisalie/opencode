@@ -171,6 +171,55 @@ async function rootCommit(dir: string) {
 }
 
 describe("Project.resolve", () => {
+  it.live("uses exact explicit associations without changing the owning Git project's metadata", () =>
+    Effect.gen(function* () {
+      const tmp = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const checkout = path.join(tmp.path, "checkout")
+      const workspace = path.join(tmp.path, "workspace")
+      const nested = path.join(workspace, "nested")
+      const other = path.join(tmp.path, "other")
+      yield* Effect.promise(() => fs.mkdir(checkout))
+      yield* Effect.promise(() => fs.mkdir(nested, { recursive: true }))
+      yield* Effect.promise(() => fs.mkdir(other))
+      yield* Effect.promise(() => initRepo(checkout, { commit: true }))
+      yield* Effect.promise(() => initRepo(other))
+
+      const project = yield* Project.Service
+      const owner = yield* project.resolve(abs(checkout))
+      const before = yield* project.resolve(abs(workspace))
+      expect(before.id).not.toBe(owner.id)
+      yield* project.update({ projectID: owner.id, name: "Owner" })
+
+      const listed = yield* project.associate({
+        projectID: owner.id,
+        directory: abs(`${workspace}/.`),
+        strategy: "loom",
+      })
+      expect(listed).toContainEqual({ directory: yield* real(workspace), strategy: "loom" })
+      const associated = yield* project.resolve(abs(workspace))
+      expect(associated).toMatchObject({
+        id: owner.id,
+        directory: yield* real(workspace),
+        canonical: yield* real(checkout),
+      })
+      expect(associated.vcs).toBeUndefined()
+      expect((yield* project.resolve(abs(nested))).id).not.toBe(owner.id)
+      expect((yield* project.list()).find((item) => item.id === owner.id)).toMatchObject({
+        canonical: yield* real(checkout),
+        vcs: "git",
+        name: "Owner",
+      })
+
+      yield* project.associate({ projectID: owner.id, directory: abs(other) })
+      expect((yield* project.resolve(abs(other))).id).not.toBe(owner.id)
+      yield* project.dissociate({ projectID: owner.id, directory: abs(workspace) })
+      expect((yield* project.resolve(abs(workspace))).id).toBe(before.id)
+    }),
+  )
+
   it.live("creates distinct deterministic projects for exact markerless directories", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(

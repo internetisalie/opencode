@@ -216,6 +216,15 @@ export type SessionImportInput = {
 export type SessionImportOutput = Session.Info
 export type SessionImportOperation<E = never> = (input: SessionImportInput) => Effect.Effect<SessionImportOutput, E>
 
+export type SessionMirrorInput = {
+  readonly info: Session.Info
+  readonly messages: ReadonlyArray<SessionMessage.Info>
+  readonly source: string
+  readonly location?: Location.PublicRef | undefined
+}
+export type SessionMirrorOutput = Session.Info
+export type SessionMirrorOperation<E = never> = (input: SessionMirrorInput) => Effect.Effect<SessionMirrorOutput, E>
+
 export type SessionExportInput = { readonly sessionID: Session.ID; readonly sanitize?: boolean | undefined }
 export type SessionExportOutput = { readonly info: Session.Info; readonly messages: ReadonlyArray<SessionMessage.Info> }
 export type SessionExportOperation<E = never> = (input: SessionExportInput) => Effect.Effect<SessionExportOutput, E>
@@ -1413,6 +1422,7 @@ export interface SessionApi<E = never> {
   readonly stats: SessionStatsOperation<E>
   readonly create: SessionCreateOperation<E>
   readonly import: SessionImportOperation<E>
+  readonly mirror: SessionMirrorOperation<E>
   readonly export: SessionExportOperation<E>
   readonly active: SessionActiveOperation<E>
   readonly get: SessionGetOperation<E>
@@ -1755,9 +1765,34 @@ export type ProjectUpdateInput = {
 export type ProjectUpdateOutput = Project.Info
 export type ProjectUpdateOperation<E = never> = (input: ProjectUpdateInput) => Effect.Effect<ProjectUpdateOutput, E>
 
+export type ProjectDirectoriesInput = { readonly projectID: Project.ID }
+export type ProjectDirectoriesOutput = Project.Directories
+export type ProjectDirectoriesOperation<E = never> = (
+  input: ProjectDirectoriesInput,
+) => Effect.Effect<ProjectDirectoriesOutput, E>
+
+export type ProjectDirectoryCreateInput = {
+  readonly projectID: Project.ID
+  readonly directory: AbsolutePath
+  readonly strategy?: string | undefined
+}
+export type ProjectDirectoryCreateOutput = Project.Directories
+export type ProjectDirectoryCreateOperation<E = never> = (
+  input: ProjectDirectoryCreateInput,
+) => Effect.Effect<ProjectDirectoryCreateOutput, E>
+
+export type ProjectDirectoryRemoveInput = { readonly projectID: Project.ID; readonly directory: AbsolutePath }
+export type ProjectDirectoryRemoveOutput = Project.Directories
+export type ProjectDirectoryRemoveOperation<E = never> = (
+  input: ProjectDirectoryRemoveInput,
+) => Effect.Effect<ProjectDirectoryRemoveOutput, E>
+
 export interface ProjectApi<E = never> {
   readonly list: ProjectListOperation<E>
   readonly update: ProjectUpdateOperation<E>
+  readonly directories: ProjectDirectoriesOperation<E>
+  readonly directoryCreate: ProjectDirectoryCreateOperation<E>
+  readonly directoryRemove: ProjectDirectoryRemoveOperation<E>
 }
 
 export type FormListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }

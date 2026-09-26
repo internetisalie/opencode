@@ -16,6 +16,15 @@ export interface Info extends Schema.Schema.Type<typeof Info> {}
 export const UpdateInput = Project.UpdateInput
 export type UpdateInput = typeof UpdateInput.Type
 
+export const Directories = Project.Directories
+export type Directories = typeof Directories.Type
+
+export const AssociateInput = Project.AssociateInput
+export type AssociateInput = typeof AssociateInput.Type
+
+export const DissociateInput = Project.DissociateInput
+export type DissociateInput = typeof DissociateInput.Type
+
 export const Event = Project.Event
 
 export const Vcs = Schema.Struct({

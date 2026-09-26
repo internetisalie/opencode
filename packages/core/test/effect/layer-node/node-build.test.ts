@@ -100,6 +100,9 @@ describe("node build", () => {
         return Project.Service.of({
           list: () => Effect.succeed([]),
           update: () => Effect.die("not implemented"),
+          directories: () => Effect.succeed([]),
+          associate: () => Effect.die("not implemented"),
+          dissociate: () => Effect.die("not implemented"),
           activate: () => Effect.void,
           resolve: (directory) => Effect.succeed({ id: Project.ID.global, directory, canonical: directory }),
         })

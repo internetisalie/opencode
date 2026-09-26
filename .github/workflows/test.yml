@@ -23,6 +23,7 @@ env:
 
 jobs:
   affected:
+    if: github.repository != 'internetisalie/opencode'
     name: affected packages
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
@@ -53,6 +54,7 @@ jobs:
           bun -e 'const result = await Bun.file("affected.json").json(); console.log(`app=${result.packages.count > 0}`)' >> "$GITHUB_OUTPUT"
 
   unit:
+    if: github.repository != 'internetisalie/opencode'
     name: unit (${{ matrix.settings.name }})
     strategy:
       fail-fast: false
@@ -178,6 +180,7 @@ jobs:
         run: bun run check:generated
 
   e2e:
+    if: github.repository != 'internetisalie/opencode'
     name: e2e (${{ matrix.settings.name }})
     needs: affected
     strategy:

@@ -14,10 +14,12 @@ import { PermissionSaved } from "@opencode/core/permission/saved"
 import { PtyTicket } from "@opencode/core/pty/ticket"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { Project } from "@opencode/core/project"
+import { FSUtil } from "@opencode/util/fs-util"
 import { Worktree } from "@opencode/core/worktree"
 import { Session } from "@opencode/core/session"
 import { Instance } from "@opencode/core/instance/service"
 import { SessionTransfer } from "@opencode/core/session/transfer"
+import { SessionStore } from "@opencode/core/session/store"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { Job } from "@opencode/core/job"
 import { Mcp } from "@opencode/core/mcp/index"
@@ -46,7 +48,9 @@ import { ServerPairing } from "./pairing"
 import { layer } from "./location"
 import { formLocationLayer } from "./middleware/form-location"
 import { sessionLocationLayer } from "./middleware/session-location"
+import { sessionOwnershipLayer } from "./middleware/session-ownership"
 import { ServerInfo } from "./server-info"
+import { pluginRoutes } from "./plugin-routes"
 import type { ServerOptions } from "./options"
 
 const applicationServiceNodes = [
@@ -56,9 +60,11 @@ const applicationServiceNodes = [
   EventLogger.node,
   httpClient,
   Job.node,
+  FSUtil.node,
   Project.node,
   Worktree.node,
   Session.node,
+  SessionStore.node,
   Instance.node,
   SessionTransfer.node,
   SdkPlugins.node,
@@ -89,6 +95,7 @@ export function createRoutes(
     options,
     serviceURLs,
     overrides,
+    true,
   )
 }
 
@@ -101,7 +108,14 @@ export function createEmbeddedRoutes(
   overrides: LayerNode.Replacements = [],
   instances?: InstanceNode,
 ) {
-  return makeRoutes(ServerAuth.Config.configLayer({ password: Option.none() }), options, () => [], overrides, instances)
+  return makeRoutes(
+    ServerAuth.Config.configLayer({ password: Option.none() }),
+    options,
+    () => [],
+    overrides,
+    false,
+    instances,
+  )
 }
 
 function makeRoutes<AuthError, AuthServices>(
@@ -110,6 +124,7 @@ function makeRoutes<AuthError, AuthServices>(
   serviceURLs: () => ReadonlyArray<string>,
   // Runtime-profile replacements (e.g. workerd) applied after the standard set, so later entries win.
   overrides: LayerNode.Replacements,
+  authenticated: boolean,
   instances?: InstanceNode,
 ) {
   const standard: LayerNode.Replacements = [
@@ -177,6 +192,7 @@ function makeRoutes<AuthError, AuthServices>(
         Layer.provide(handlers.pipe(Layer.provide(services), Layer.provide(Layer.succeed(CorsConfig, options)))),
         Layer.provide(formLocationLayer),
         Layer.provide(sessionLocationLayer),
+        Layer.provide(sessionOwnershipLayer),
         Layer.provide(layer),
         Layer.provide(authorizationLayer),
         Layer.provide(schemaErrorLayer),
@@ -185,7 +201,11 @@ function makeRoutes<AuthError, AuthServices>(
         Layer.provideMerge(services),
         Layer.provideMerge(HttpRouter.layer),
       )
-      return Layer.merge(api, V1Migration.layer.pipe(Layer.provide(services)))
+      const plugin = pluginRoutes(
+        Context.get(context, LocationServiceMap.Service),
+        authenticated ? Option.fromNullishOr(options.password) : Option.none(),
+      ).pipe(Layer.provideMerge(api))
+      return Layer.merge(plugin, V1Migration.layer.pipe(Layer.provide(services)))
     }),
   )
 }

@@ -108,15 +108,22 @@ export const PersistentPtyGroup = HttpApiGroup.make("server.experimental")
       OpenApi.annotations({
         identifier: "persistentPty.connect",
         summary: "Connect to a persistent PTY",
-        description: "Stream persistent PTY output through the OpenCode server.",
+        description:
+          "Stream persistent PTY output through the OpenCode server. Set input_ack=1 to receive a JSON input_ack event after each successfully processed input frame; control frames do not receive an acknowledgement.",
         transform: (operation) => ({
           ...operation,
           "x-websocket": true,
           parameters: [
             ...(operation.parameters ?? []),
-            ...["cursor", "role", "attachment_id", "takeover", "input_protocol", PTY_CONNECT_TICKET_QUERY].map(
-              (name) => ({ in: "query", name, schema: { type: "string" } }),
-            ),
+            ...[
+              "cursor",
+              "role",
+              "attachment_id",
+              "takeover",
+              "input_protocol",
+              "input_ack",
+              PTY_CONNECT_TICKET_QUERY,
+            ].map((name) => ({ in: "query", name, schema: { type: "string" } })),
           ],
         }),
       }),

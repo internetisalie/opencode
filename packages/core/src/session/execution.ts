@@ -155,6 +155,7 @@ export const layer = Layer.effect(
       isActive: coordinator.isActive,
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
+          if (yield* store.isMirror(sessionID)) return false
           const interrupted = yield* coordinator.interrupt(sessionID, options?.reason ?? "user", options)
           if (!options?.resume) return interrupted
           // Resume steering input and between-turn control work from the interrupted
@@ -171,8 +172,16 @@ export const layer = Layer.effect(
             yield* coordinator.wake(sessionID, "steer")
           return interrupted
         }),
-      resume: coordinator.run,
-      wake: coordinator.wake,
+      resume: (sessionID) =>
+        Effect.gen(function* () {
+          if (yield* store.isMirror(sessionID)) return
+          yield* coordinator.run(sessionID)
+        }),
+      wake: (sessionID) =>
+        Effect.gen(function* () {
+          if (yield* store.isMirror(sessionID)) return
+          yield* coordinator.wake(sessionID)
+        }),
       awaitIdle: coordinator.awaitIdle,
     })
   }),

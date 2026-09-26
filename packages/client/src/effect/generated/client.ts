@@ -30,6 +30,8 @@ import type {
   SessionCreateOutput,
   SessionImportInput,
   SessionImportOutput,
+  SessionMirrorInput,
+  SessionMirrorOutput,
   SessionExportInput,
   SessionExportOutput,
   SessionActiveOutput,
@@ -162,6 +164,12 @@ import type {
   ProjectListOutput,
   ProjectUpdateInput,
   ProjectUpdateOutput,
+  ProjectDirectoriesInput,
+  ProjectDirectoriesOutput,
+  ProjectDirectoryCreateInput,
+  ProjectDirectoryCreateOutput,
+  ProjectDirectoryRemoveInput,
+  ProjectDirectoryRemoveOutput,
   FormListInput,
   FormListOutput,
   PermissionRequestListInput,
@@ -407,6 +415,21 @@ const EndpointSessionImport = (raw: RawClient["server.session"]) => (input: Sess
   preserveEffect<SessionImportOutput>()(
     raw["session.import"]({
       payload: { info: input["info"], messages: input["messages"], location: input["location"] },
+    }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
+
+const EndpointSessionMirror = (raw: RawClient["server.session"]) => (input: SessionMirrorInput) =>
+  preserveEffect<SessionMirrorOutput>()(
+    raw["session.mirror"]({
+      payload: {
+        info: input["info"],
+        messages: input["messages"],
+        source: input["source"],
+        location: input["location"],
+      },
     }).pipe(
       Effect.mapError(mapClientError),
       Effect.map((value) => value.data),
@@ -757,6 +780,7 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   stats: EndpointSessionStats(raw),
   create: EndpointSessionCreate(raw),
   import: EndpointSessionImport(raw),
+  mirror: EndpointSessionMirror(raw),
   export: EndpointSessionExport(raw),
   active: EndpointSessionActive(raw),
   get: EndpointSessionGet(raw),
@@ -1058,9 +1082,33 @@ const EndpointProjectUpdate = (raw: RawClient["server.project"]) => (input: Proj
     }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointProjectDirectories = (raw: RawClient["server.project"]) => (input: ProjectDirectoriesInput) =>
+  preserveEffect<ProjectDirectoriesOutput>()(
+    raw["project.directories"]({ params: { projectID: input["projectID"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointProjectDirectoryCreate = (raw: RawClient["server.project"]) => (input: ProjectDirectoryCreateInput) =>
+  preserveEffect<ProjectDirectoryCreateOutput>()(
+    raw["project.directoryCreate"]({
+      params: { projectID: input["projectID"] },
+      payload: { directory: input["directory"], strategy: input["strategy"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointProjectDirectoryRemove = (raw: RawClient["server.project"]) => (input: ProjectDirectoryRemoveInput) =>
+  preserveEffect<ProjectDirectoryRemoveOutput>()(
+    raw["project.directoryRemove"]({
+      params: { projectID: input["projectID"] },
+      query: { directory: input["directory"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const adaptGroupProject = (raw: RawClient["server.project"]) => ({
   list: EndpointProjectList(raw),
   update: EndpointProjectUpdate(raw),
+  directories: EndpointProjectDirectories(raw),
+  directoryCreate: EndpointProjectDirectoryCreate(raw),
+  directoryRemove: EndpointProjectDirectoryRemove(raw),
 })
 
 const EndpointFormList = (raw: RawClient["server.form"]) => (input?: FormListInput) =>

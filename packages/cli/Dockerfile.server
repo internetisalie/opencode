@@ -1,0 +1,8 @@
+FROM alpine:3.22
+
+RUN apk add --no-cache bash git libgcc libstdc++ ripgrep
+COPY dist/cli-linux-x64-baseline-musl/bin/opencode /usr/local/bin/opencode
+RUN chmod +x /usr/local/bin/opencode
+
+EXPOSE 4096
+ENTRYPOINT ["/usr/local/bin/opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]

@@ -82,6 +82,9 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             ? Redacted.value(environmentPassword)
             : randomBytes(32).toString("base64url")
       if (!password) return yield* Effect.fail(new Error("Missing server password"))
+      const remoteProxyURL = process.env.OPENCODE_REMOTE_PROXY_URL
+      const remoteProxyToken = process.env.OPENCODE_REMOTE_PROXY_TOKEN
+      delete process.env.OPENCODE_REMOTE_PROXY_TOKEN
       const instanceID = randomUUID()
       const transform = yield* WebUi.handler()
       const server = yield* start(
@@ -95,6 +98,12 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           port,
           cors: options.cors ?? config.cors,
           password,
+          remoteProxy: remoteProxyURL
+            ? {
+                url: remoteProxyURL,
+                token: remoteProxyToken ?? "",
+              }
+            : undefined,
           pty: { handoff },
           simulation: truthy(process.env.OPENCODE_SIMULATE),
           database: {

@@ -3,9 +3,11 @@ export * as ServerFetch from "./fetch"
 import { Context, Effect, Layer } from "effect"
 import { HttpEffect, HttpMiddleware, HttpRouter, HttpServer } from "effect/unstable/http"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
+import { SessionStore } from "@opencode/core/session/store"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { isAllowedCorsOrigin } from "./cors"
 import { createRoutes } from "./routes"
+import { forwardMirroredSession } from "./middleware/remote-session"
 import type { ServerOptions } from "./options"
 
 export interface BootOptions {
@@ -48,6 +50,8 @@ export const make = Effect.fn("ServerFetch.make")(function* (options: ServerOpti
   return Context.get(context, HttpRouter.HttpRouter)
     .asHttpEffect()
     .pipe(
+      (app) =>
+        forwardMirroredSession(app, options.remoteProxy, Context.get(context, SessionStore.Service), options.password),
       HttpMiddleware.cors({ allowedOrigins: (origin) => isAllowedCorsOrigin(origin, options), maxAge: 86_400 }),
       HttpEffect.toWebHandlerWith(context),
     )

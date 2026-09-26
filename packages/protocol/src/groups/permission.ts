@@ -8,6 +8,7 @@ import { Context, Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { PermissionNotFoundError, SessionNotFoundError } from "../errors.js"
 import { LocationQuery, locationQueryOpenApi } from "./location.js"
+import { SessionOwnership } from "../middleware/session-ownership.js"
 
 export const makePermissionGroup = <
   LocationId extends HttpApiMiddleware.AnyId,
@@ -132,4 +133,5 @@ export const makePermissionGroup = <
           }),
         ),
     )
+    .middleware(SessionOwnership)
     .annotateMerge(OpenApi.annotations({ title: "permission", description: "Experimental permission routes." }))
