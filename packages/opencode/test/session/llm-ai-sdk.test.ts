@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import { LLMAISDK } from "../../src/session/llm/ai-sdk"
 
 type AISDKEvent = Parameters<typeof LLMAISDK.toLLMEvents>[1]
-type AdapterEvents = Effect.Effect.Success<ReturnType<typeof LLMAISDK.toLLMEvents>>
+type AdapterEvents = Effect.Success<ReturnType<typeof LLMAISDK.toLLMEvents>>
 
 const usage = {
   inputTokens: 1,
