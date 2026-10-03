@@ -66,6 +66,54 @@ jobs:
             bun test "$test"
           done
 
+      - name: Test isolated Linux persistent PTY observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/.agent-scratch"
+          suite=$(mktemp -d "$GITHUB_WORKSPACE/.agent-scratch/XXXXXX")
+          native="$GITHUB_WORKSPACE/node_modules/.bun/@opencode-ai+pty-linux-x64-gnu@0.1.13/node_modules/@opencode-ai/pty-linux-x64-gnu/bin/opencode-pty"
+          cleanup() {
+            result=$?
+            trap - EXIT
+            if timeout --kill-after=2s 10s bun -e '
+              const fs = require("node:fs");
+              const native = fs.realpathSync(process.argv[1]);
+              const marker = "OPENCODE_PASSIVE_PTY_TEST_ROOT=" + process.argv[2];
+              function owned() {
+                return fs.readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).some((pid) => {
+                  try {
+                    if (fs.statSync("/proc/" + pid).uid !== process.getuid()) return false;
+                    if (fs.readlinkSync("/proc/" + pid + "/exe") !== native) return false;
+                    return fs.readFileSync("/proc/" + pid + "/environ", "utf8").split("\0").includes(marker);
+                  } catch (error) {
+                    if (error.code === "ENOENT" || error.code === "ESRCH") return false;
+                    throw error;
+                  }
+                });
+              }
+              while (owned()) await Bun.sleep(50);
+            ' "$native" "$OPENCODE_PASSIVE_PTY_TEST_ROOT"; then
+              rm -rf -- "$suite"
+            else
+              printf 'Owned PTY cleanup incomplete; preserved %s\n' "$suite" >&2
+              result=1
+            fi
+            exit "$result"
+          }
+          export XDG_DATA_HOME="$suite/d" XDG_CACHE_HOME="$suite/c" XDG_CONFIG_HOME="$suite/f"
+          export XDG_STATE_HOME="$suite/s" XDG_RUNTIME_DIR="$suite/r"
+          export TMPDIR="$suite/t" TMP="$suite/t" TEMP="$suite/t"
+          export OPENCODE_CONFIG_DIR="$suite/f" OPENCODE_TEST_HOME="$suite/h"
+          export OPENCODE_PTY_RUNTIME_DIR="$suite/r" OPENCODE_PASSIVE_PTY_TEST_ROOT="$suite/o"
+          export OPENCODE_PTY_BIN="$native"
+          mkdir -p "$suite"/{d,c,f,s,r,t,h,o}
+          trap cleanup EXIT
+          test -x "$native"
+          test "$(sha256sum "$native")" = "b8caf78cbed9610aa5b744264aade552ed57cac70b2ebc27a788a0b1d2e02caa  $native"
+          cd "$GITHUB_WORKSPACE/packages/server"
+          timeout --signal=TERM --kill-after=5s 180s bun test test/persistent-pty.test.ts test/passive-pty-observation.test.ts
+
       - name: Build the Linux server binary
         working-directory: packages/cli
         run: |
