@@ -4,6 +4,8 @@ import { Bus } from "@opencode/core/bus"
 import { Event } from "@opencode/schema/event"
 import { isOpenCodeEvent, type OpenCodeEvent } from "@opencode/protocol/groups/event"
 import { Cause, Context, Effect, Layer, Queue, Schema, Scope, Stream } from "effect"
+import { SessionStore } from "@opencode/core/session/store"
+import { observeRemoteEvents, RemoteEventConfig } from "./remote-events"
 
 export const SubscriberCapacity = 4_096
 
@@ -22,6 +24,7 @@ export type Error = SubscriberOverflowError | EncodingError
 
 export interface Interface {
   readonly subscribe: Effect.Effect<Stream.Stream<string, Error>, never, Scope.Scope>
+  readonly forward: (event: OpenCodeEvent) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/server/EventFeed") {}
@@ -45,7 +48,7 @@ export const make = Effect.fn("EventFeed.make")(function* (
       for (const subscriber of current) Queue.failCauseUnsafe(subscriber, Cause.fail(error))
     })
 
-  const publish = Effect.fnUntraced(function* (event: Event.Payload) {
+  const publish = Effect.fnUntraced(function* (event: Event.Payload | OpenCodeEvent) {
     if (!isOpenCodeEvent(event)) return
     if (subscribers.size === 0) return
     const encoded = yield* Effect.try({
@@ -72,6 +75,7 @@ export const make = Effect.fn("EventFeed.make")(function* (
   yield* Effect.addFinalizer(() => unsubscribe)
 
   return Service.of({
+    forward: publish,
     subscribe: Effect.acquireRelease(
       Queue.dropping<string, Error>(capacity).pipe(Effect.tap((queue) => Effect.sync(() => subscribers.add(queue)))),
       (queue) =>
@@ -84,6 +88,12 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
-    return yield* make(bus.listen)
+    const feed = yield* make(bus.listen)
+    const config = yield* Effect.serviceOption(RemoteEventConfig)
+    if (config._tag === "Some" && config.value) {
+      const sessions = yield* SessionStore.Service
+      yield* observeRemoteEvents(config.value, sessions, feed.forward)
+    }
+    return feed
   }),
 )
