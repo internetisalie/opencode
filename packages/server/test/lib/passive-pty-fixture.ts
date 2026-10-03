@@ -53,7 +53,7 @@ export function makePassivePtyFixture(options: FixtureOptions): Effect.Effect<Pa
     yield* filesystem(async () => {
       for (const key of [
         "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
-        "TMPDIR", "TMP", "TEMP", "OPENCODE_CONFIG_DIR", "OPENCODE_PTY_RUNTIME_DIR",
+        "TMPDIR", "TMP", "TEMP", "OPENCODE_CONFIG_DIR", "OPENCODE_PTY_RUNTIME_DIR", "OPENCODE_TEST_HOME",
       ]) {
         if (!process.env[key]) throw new Error(`blocked: launcher must set ${key} before importing the server`)
       }
@@ -209,6 +209,7 @@ export interface TestConsumer {
   readonly dispose: () => Promise<void>
   readonly status: () => ConsumerResource["kind"]
   readonly callbacks: () => number
+  readonly timerFirings: () => number
   readonly errors: readonly string[]
 }
 export function makeTestConsumer(request: Effect.Effect<PersistentPty.Snapshot, Error>): TestConsumer {
@@ -216,6 +217,7 @@ export function makeTestConsumer(request: Effect.Effect<PersistentPty.Snapshot, 
   const errors: string[] = []
   let resource: ConsumerResource = { kind: "request" }
   let callbacks = 0
+  let timerFirings = 0
   let disposing: Promise<void> | undefined
   const inactive = (): boolean => resource.kind === "disposed"
   const observed = request.pipe(Effect.onExit((exit) => Effect.sync(() => {
@@ -231,12 +233,15 @@ export function makeTestConsumer(request: Effect.Effect<PersistentPty.Snapshot, 
       })
       if (inactive()) return
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 100)
+        const timer = setTimeout(() => {
+          timerFirings++
+          resolve()
+        }, 100)
         resource = { kind: "timer", cancel: () => { clearTimeout(timer); resolve() } }
       })
     }
   })()
-  return { status: () => resource.kind, callbacks: () => callbacks, errors, dispose: () => {
+  return { status: () => resource.kind, callbacks: () => callbacks, timerFirings: () => timerFirings, errors, dispose: () => {
     if (disposing) return disposing
     if (resource.kind === "timer") resource.cancel()
     resource = { kind: "disposed" }

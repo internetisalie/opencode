@@ -84,6 +84,8 @@ jobs:
                 return fs.readdirSync("/proc").filter((pid) => /^\d+$/.test(pid)).some((pid) => {
                   try {
                     if (fs.statSync("/proc/" + pid).uid !== process.getuid()) return false;
+                    const argv = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").split("\0");
+                    if (argv[0] !== process.argv[1] || argv[1] !== "daemon") return false;
                     if (fs.readlinkSync("/proc/" + pid + "/exe") !== native) return false;
                     return fs.readFileSync("/proc/" + pid + "/environ", "utf8").split("\0").includes(marker);
                   } catch (error) {

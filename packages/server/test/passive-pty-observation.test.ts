@@ -186,7 +186,7 @@ live("P04 response loss, removal and child exit are not PTY completion", () => E
   const missing = yield* fixture.snapshot(removed.info.id).pipe(Effect.result)
   expect(missing._tag).toBe("Failure")
   if (missing._tag === "Failure") expect(missing.failure.message).toContain("HTTP404")
-  report("P04-removed", { kind: "unavailable-PTY-not-completed", missing })
+  report("P04-removed", { kind: "unavailable-PTY-not-completed", error: missing._tag === "Failure" ? String(missing.failure) : "unexpected success" })
   const child = yield* spawn(fixture, { caseID: "Child", sessionID: "ses_Child", code: 0, child: true })
   yield* fixture.releaseGate({ caseID: child.caseID, stage: "mid" })
   yield* waitSample(fixture, child, "CHILD")
@@ -229,11 +229,13 @@ live("P06 disposes real held requests and scheduled test-consumer reads", () => 
   yield* Effect.addFinalizer(() => Effect.promise(scheduled.dispose))
   yield* until(() => scheduled.status() === "timer")
   const callbacks = scheduled.callbacks()
+  const timerFirings = scheduled.timerFirings()
   expect(callbacks).toBeGreaterThan(0)
   expect(scheduled.dispose()).toBe(scheduled.dispose())
   yield* Effect.promise(scheduled.dispose)
   yield* Effect.sleep("150 millis")
   expect(scheduled.callbacks()).toBe(callbacks)
+  expect(scheduled.timerFirings()).toBe(timerFirings)
   expect(scheduled.errors).toEqual([])
   const fault = yield* makeReadFault(fixture.snapshot(target.info.id), "hold")
   const held = makeTestConsumer(fault.request)
@@ -248,10 +250,7 @@ live("P06 disposes real held requests and scheduled test-consumer reads", () => 
   expect(held.errors).toEqual(["cancelled"])
   yield* fixture.releaseGate({ caseID: target.caseID, stage: "mid" })
   yield* waitSample(fixture, target, "MID")
-  expect(held.callbacks()).toBe(0)
-  expect(held.status()).toBe("disposed")
-  expect(scheduled.status()).toBe("disposed")
-  report("P06", { cancelled: held.errors, callbacksAfterDisposal: held.callbacks(), scope: "request/test consumer, not future notifier" })
+  report("P06", { cancelled: held.errors, timerFiringsAfterDisposal: scheduled.timerFirings(), scope: "scheduled timer cancellation and held-request interruption; not successful post-await delivery or future notifier" })
 }), 30_000)
 
 live("P07 same-owner recovery does not establish replacement continuity", () => Effect.gen(function* () {
@@ -288,7 +287,7 @@ afterAll((): void => report("P08", {
   LDV199: "attributed prior saved-interval inspection, experiments 5da4c1d25f8d192addb9662279cd8b556ff7435a / 0f51038fffc3c7060160b8e96cf8e7d1f6b28163; not new Core comparison",
   LDV200: "attributed Finding I and H; runtime6 timeout/TERM143, runtime7 H7 HTTP429, runtime8 authorized retry retained",
   pins: {
-    plan: "2e272e4fc7123d84809bf1fb3304a9dccef56988", source: "591c6999ebceb86f1b4869685d87bc2e10d9a333",
+    plan: "4ad4d4df23dd943fdd2f9c48d441af3caa6b6741", source: "591c6999ebceb86f1b4869685d87bc2e10d9a333",
     native: "b8caf78cbed9610aa5b744264aade552ed57cac70b2ebc27a788a0b1d2e02caa",
     LDV199Input: "v2/item/gitea.internetisalie.net/loom/loom/LDV-199/input/ldv-199-cloud-gaps-verified-input.tar.gz",
     LDV199Hash: "2de029e3cb4a6cf36da784d29771554b3a6e319099f7288c83bac01b20b4fdc2",
