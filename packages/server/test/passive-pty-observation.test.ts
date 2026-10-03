@@ -250,7 +250,7 @@ live("P06 disposes real held requests and scheduled test-consumer reads", () => 
   expect(held.errors).toEqual(["cancelled"])
   yield* fixture.releaseGate({ caseID: target.caseID, stage: "mid" })
   yield* waitSample(fixture, target, "MID")
-  report("P06", { cancelled: held.errors, timerFiringsAfterDisposal: scheduled.timerFirings(), scope: "scheduled timer cancellation and held-request interruption; not successful post-await delivery or future notifier" })
+  report("P06", { cancelled: held.errors, timerFiringsTotal: scheduled.timerFirings(), scope: "scheduled timer cancellation and held-request interruption; not successful post-await delivery or future notifier" })
 }), 30_000)
 
 live("P07 same-owner recovery does not establish replacement continuity", () => Effect.gen(function* () {
