@@ -199,7 +199,11 @@ export async function checkPluginCompatibility(target: string, opencodeVersion: 
   if (!isRecord(engines)) return
   const range = engines.opencode
   if (typeof range !== "string") return
-  if (!semver.satisfies(opencodeVersion, range)) {
+  // A fork build such as 1.18.32-internetisalie.2 is 1.18.32 plus patches, so the range is checked against
+  // 1.18.32; semver would otherwise sort it below every range that names that version. A prerelease named
+  // inside a range is therefore not ordered against the build's own tag.
+  const base = `${semver.major(opencodeVersion)}.${semver.minor(opencodeVersion)}.${semver.patch(opencodeVersion)}`
+  if (!semver.satisfies(base, range)) {
     throw new Error(`Plugin requires opencode ${range} but running ${opencodeVersion}`)
   }
 }
