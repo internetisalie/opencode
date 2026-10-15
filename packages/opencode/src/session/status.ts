@@ -51,7 +51,7 @@ const layer = Layer.effect(
         return
       }
       data.set(sessionID, status)
-    }, InstanceLifetime.hold)
+    }, (effect) => InstanceLifetime.hold(effect, "session"))
 
     return Service.of({ get, list, set })
   }),

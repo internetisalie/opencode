@@ -1,5 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, spyOn } from "bun:test"
+import { SessionPrompt } from "@/session/prompt"
+import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { mkdir } from "node:fs/promises"
@@ -74,6 +76,39 @@ const activityIt = testEffect(LayerNode.compile(LayerNode.group([
 ]), [[InstanceStore.bootstrapNode, noopBootstrapLayer]]).pipe(Layer.provide(ConfigProvider.layer(
   ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" }),
 ))))
+
+const gapIt = testEffect(Layer.mergeAll(httpApiLayer, AppNodeBuilderV1.build(SessionPrompt.node)).pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" }))),
+))
+
+gapIt.effect("R1-L2 prompt_async reserves the gap after its 204 response", () => Effect.gen(function* () {
+  const quiet = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+  const directory = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+  const headers = { "x-opencode-directory": directory, "content-type": "application/json" }
+  yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers: { ...headers, "x-opencode-directory": quiet }, body: JSON.stringify({ title: "quiet" }) })
+  yield* requestJson("/vcs", { headers: { ...headers, "x-opencode-directory": quiet } })
+  const chat = yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers, body: JSON.stringify({ title: "gap" }) })
+  const prompt = yield* SessionPrompt.Service
+  const entered = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const spy = spyOn(prompt, "prompt").mockImplementation(() => Deferred.succeed(entered, undefined).pipe(
+    Effect.andThen(Deferred.await(release)), Effect.andThen(Effect.die(new Error("gap fixture complete"))),
+  ))
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+  yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+  const disposed: string[] = []
+  const off = registerDisposer(async (dir) => { disposed.push(dir) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  const response = yield* request(pathFor(SessionPaths.promptAsync, { sessionID: chat.id }), {
+    method: "POST", headers, body: JSON.stringify({ parts: [{ type: "text", text: "gap" }] }),
+  })
+  expect(response.status).toBe(204)
+  yield* Deferred.await(entered)
+  yield* TestClock.adjust(8000)
+  expect(disposed).not.toContain(directory)
+  expect(disposed).toContain(quiet)
+  yield* Deferred.succeed(release, undefined)
+}))
 
 activityIt.effect("runner setup, shell, retry and detached job ownership are directory local", () => Effect.gen(function* () {
   const directory = yield* tmpdirScoped({ git: true })

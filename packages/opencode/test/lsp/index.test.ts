@@ -2,6 +2,7 @@ import { describe, expect, spyOn } from "bun:test"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigProvider, Deferred, Effect, Fiber, Layer } from "effect"
+import { TestClock } from "effect/testing"
 import { LSPClient } from "@/lsp/client"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
@@ -36,6 +37,41 @@ const idleIt = testEffect(Layer.mergeAll(
   lspLayer(), testInstanceStoreLayer,
   LayerNode.compile(LayerNode.group([CrossSpawnSpawner.node, Instruction.node, FSUtil.node, Truncate.node, Agent.node, Ripgrep.node])),
 ).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "200" })))))
+
+const gapIt = testEffect(Layer.mergeAll(
+  lspLayer(), testInstanceStoreLayer,
+  LayerNode.compile(LayerNode.group([CrossSpawnSpawner.node, Instruction.node, FSUtil.node, Truncate.node, Agent.node, Ripgrep.node])),
+).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" })))))
+
+gapIt.effect("R1-L2 ReadTool warm reserves the gap after the read returns", () => Effect.gen(function* () {
+  const quiet = yield* tmpdirScoped({ git: true })
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  yield* store.load({ directory: quiet })
+  const ctx = yield* store.load({ directory })
+  const lsp = yield* LSP.Service
+  const entered = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const spy = spyOn(lsp, "touchFile").mockImplementation(() => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))))
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+  yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+  const disposed: string[] = []
+  const off = registerDisposer(async (dir) => { disposed.push(dir) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  const filePath = path.join(directory, "gap.txt")
+  yield* Effect.promise(() => Bun.write(filePath, "gap\n"))
+  const result = yield* Effect.gen(function* () {
+    const definition = yield* ReadTool
+    const tool = yield* definition.init()
+    return yield* tool.execute({ filePath }, { sessionID: SessionID.make("ses_test"), messageID: MessageID.make("msg_test"), callID: "gap", agent: "build", abort: new AbortController().signal, messages: [], metadata: () => Effect.void, ask: () => Effect.void })
+  }).pipe(Effect.provideService(InstanceRef, ctx))
+  expect(result.output).toContain("gap")
+  yield* Deferred.await(entered)
+  yield* TestClock.adjust(8000)
+  expect(disposed).not.toContain(directory)
+  expect(disposed).toContain(quiet)
+  yield* Deferred.succeed(release, undefined)
+}))
 
 for (const fail of [false, true]) idleIt.live(`read warm and active LSP startup/file touch pin the directory through ${fail ? "error" : "completion"}`, () => Effect.gen(function* () {
   const directory = yield* tmpdirScoped({ git: true, config: { lsp: { fake: { command: [process.execPath, fakeServerPath], extensions: [".repro"] } } } })

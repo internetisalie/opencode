@@ -29,7 +29,7 @@ function eventResponse(events: EventV2.Interface) {
   return Effect.gen(function* () {
     const instance = yield* InstanceState.context
     const workspaceID = yield* InstanceState.workspaceID
-    const release = yield* InstanceLifetime.acquire
+    const release = yield* InstanceLifetime.lease("event")
     yield* Effect.addFinalizer(() => release)
     // Listener registration is eager, so events published after this point cannot
     // be lost while the HTTP body fiber is starting or emitting server.connected.

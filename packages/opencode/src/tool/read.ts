@@ -117,7 +117,7 @@ export const ReadTool = Tool.define<
 
     const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
       // LSP warm-up is optional; do not let a background defect fail an otherwise successful read.
-      yield* InstanceLifetime.fork(lsp.touchFile(filepath).pipe(Effect.ignoreCause), scope)
+      yield* InstanceLifetime.fork(lsp.touchFile(filepath).pipe(Effect.ignoreCause), scope, { kind: "warm" })
     })
 
     const readSample = Effect.fn("ReadTool.readSample")(function* (

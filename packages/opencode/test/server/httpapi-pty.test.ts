@@ -10,6 +10,7 @@ import { registerDisposer } from "../../src/effect/instance-registry"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
+import { disposeMiddleware } from "../../src/server/routes/instance/httpapi/lifecycle"
 import { Pty } from "@opencode-ai/core/pty"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -28,7 +29,7 @@ const testStateLayer = Layer.effectDiscard(
 
 const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
   HttpApiApp.routes,
-  { disableListenLog: true, disableLogger: true },
+  { disableListenLog: true, disableLogger: true, middleware: disposeMiddleware },
 )
 
 const effectIt = testEffect(
@@ -50,6 +51,25 @@ const idleIt = testEffect(servedRoutes.pipe(
   Layer.provideMerge(Socket.layerWebSocketConstructorGlobal),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "200" }))),
 ))
+
+for (const reload of [false, true]) idleIt.live(`R1-M1 explicit ${reload ? "reload" : "dispose"} releases a running PTY location`, () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+  const created = yield* HttpClientRequest.post(PtyPaths.create).pipe(
+    directoryHeader(directory), HttpClientRequest.bodyJson({ command: "/bin/cat" }), Effect.flatMap(HttpClient.execute),
+  )
+  const info = yield* created.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pty.Info)))
+  expect(info.status).toBe("running")
+  // Both paths must run through the same outer middleware as production.
+  const response = yield* (reload
+    ? HttpClientRequest.patch("/config").pipe(directoryHeader(directory), HttpClientRequest.bodyJson({ formatter: false, lsp: false }), Effect.flatMap(HttpClient.execute))
+    : HttpClientRequest.post("/instance/dispose").pipe(directoryHeader(directory), HttpClient.execute))
+  expect(response.status).toBe(200)
+  yield* pollWithTimeout(Effect.sync(() => {
+    try { process.kill(info.pid, 0); return undefined } catch { return true }
+  }), "explicit teardown did not release the PTY layer / kill its process")
+  const list = yield* HttpClientRequest.get(PtyPaths.list).pipe(directoryHeader(directory), HttpClient.execute)
+  expect(yield* list.json).toEqual([])
+}))
 
 for (const natural of [false, true]) idleIt.live(`running PTY without a websocket pins its instance until ${natural ? "natural exit" : "removal"}`, () => Effect.gen(function* () {
   const dir = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })

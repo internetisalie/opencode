@@ -102,6 +102,7 @@ export const ptyHandlers = HttpApiBuilder.group(InstanceHttpApi, "pty", (handler
           Effect.onExit((exit) => Exit.isFailure(exit) ? Deferred.failCause(created, exit.cause) : Effect.void),
         ),
         scope,
+        { kind: "pty", owned: true },
       )
       return yield* Deferred.await(created)
     })

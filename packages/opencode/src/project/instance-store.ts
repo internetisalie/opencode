@@ -10,6 +10,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Clock, Config, Context, Deferred, Duration, Effect, Exit, Layer, Scope } from "effect"
 import { type InstanceContext } from "./instance-context"
 import { InstanceBootstrap } from "./bootstrap-service"
+import { Option } from "effect"
 import * as Project from "./project"
 
 export interface LoadInput {
@@ -30,6 +31,7 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/InstanceStore") {}
 
 export const use = serviceUse(Service)
+export const TEARDOWN_WAIT_MS = 5000
 
 interface Entry {
   readonly deferred: Deferred.Deferred<InstanceContext>
@@ -40,6 +42,8 @@ interface Entry {
   disposing: boolean
   context?: InstanceContext
   readonly scope: Scope.Closeable
+  readonly pins: Map<object, { kind: InstanceLifetime.Kind; since: number }>
+  retainedSince?: number
 }
 
 const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Service> = Layer.effect(
@@ -62,9 +66,12 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       revision: 0,
       disposing: false,
       scope: Scope.forkUnsafe(scope),
+      pins: new Map(),
     })
 
-    const reserve = (entry: Entry) => {
+    const reserve = (entry: Entry, kind: InstanceLifetime.Kind = "request") => {
+      const token = {}
+      entry.pins.set(token, { kind, since: clock.currentTimeMillisUnsafe() })
       entry.active++
       entry.revision++
       let released = false
@@ -72,6 +79,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         if (released) return
         released = true
         entry.active--
+        entry.pins.delete(token)
         entry.revision++
         entry.lastUsed = clock.currentTimeMillisUnsafe()
       })
@@ -79,12 +87,14 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
     const boot = (input: LoadInput & { directory: string }, entry: Entry) => {
       const owner: InstanceLifetime.Owner = {
+        directory: input.directory,
+        closing: () => entry.disposing || cache.get(input.directory) !== entry,
         scope: entry.scope,
         retained: new Set(),
-        acquire: () => {
+        acquire: (kind = "bootstrap") => {
           if (entry.disposing || cache.get(input.directory) !== entry)
             throw new Error(`Instance generation is disposing: ${input.directory}`)
-          return reserve(entry)
+          return reserve(entry, kind)
         },
       }
       const run = Effect.gen(function* () {
@@ -151,7 +161,9 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
     const disposeContext = Effect.fn("InstanceStore.disposeContext")(function* (ctx: InstanceContext) {
       yield* Effect.logInfo("disposing instance", { directory: ctx.directory })
-      const failures = yield* Effect.promise(() => runDisposers(ctx.directory))
+      const failures = yield* ttl > 0
+        ? InstanceLifetime.dispose(ctx, () => runDisposers(ctx.directory))
+        : Effect.promise(() => runDisposers(ctx.directory))
       for (const failure of failures)
         yield* Effect.logError("instance cleanup failed", { directory: ctx.directory, cause: failure.reason })
       yield* Effect.logInfo("instance disposal finished", { directory: ctx.directory, cleanupFailures: failures.length })
@@ -162,6 +174,14 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     const closeEntryScope = (directory: string, entry: Entry) => Scope.close(entry.scope, Exit.void).pipe(
       Effect.as(true),
       Effect.catchCause((cause) => Effect.logError("instance location retention cleanup failed", { directory, cause }).pipe(Effect.as(false))),
+    )
+
+    const boundedTeardown = <A>(directory: string, effect: Effect.Effect<A>) => effect.pipe(
+      Effect.interruptible,
+      Effect.timeoutOption(TEARDOWN_WAIT_MS),
+      Effect.tap((result) => Option.isNone(result)
+        ? Effect.logWarning("instance teardown deadline exceeded", { directory, timeoutMs: TEARDOWN_WAIT_MS })
+        : Effect.void),
     )
 
     const disposeEntry = Effect.fnUntraced(function* (directory: string, entry: Entry, ctx: InstanceContext, eligible?: () => boolean) {
@@ -176,9 +196,19 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       }
       return yield* Effect.gen(function* () {
         let closed = false
-        const disposed = yield* disposeContext(ctx).pipe(Effect.ensuring(
-          closeEntryScope(directory, entry).pipe(Effect.tap((result) => Effect.sync(() => { closed = result }))),
-        ))
+        const work = ttl > 0
+          ? Effect.gen(function* () {
+              // Release generation-owned borrows before RcMap invalidation.
+              // Idle sweeps can only reach here once all pins have gone idle.
+              closed = yield* closeEntryScope(directory, entry)
+              if (cache.get(directory) !== entry) return false
+              return yield* disposeContext(ctx)
+            })
+          : disposeContext(ctx).pipe(Effect.ensuring(
+              closeEntryScope(directory, entry).pipe(Effect.tap((result) => Effect.sync(() => { closed = result }))),
+            ))
+        const result = yield* ttl > 0 ? boundedTeardown(directory, work) : work.pipe(Effect.map(Option.some))
+        const disposed = Option.isSome(result) && result.value
         return disposed && closed && cache.get(directory) === entry
       }).pipe(Effect.ensuring(Effect.gen(function* () {
         yield* removeEntry(directory, entry)
@@ -188,11 +218,22 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
     const load = (input: LoadInput): Effect.Effect<InstanceContext> => {
       const directory = FSUtil.resolve(input.directory)
+      const caller = InstanceLifetime.captureDisposal()
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const existing = cache.get(directory)
+          if (ttl > 0) {
+            const ambient = yield* InstanceRef
+            if (((yield* InstanceLifetime.disposing) ?? caller)?.directory === directory ||
+                (ambient?.directory === directory && InstanceLifetime.isClosing(ambient)))
+              return yield* Effect.die(new Error(`reentrant directory teardown: ${directory}`))
+          }
           if (existing?.disposing) {
-            yield* restore(Deferred.await(existing.closed))
+            const result = yield* restore(Deferred.await(existing.closed).pipe(Effect.timeoutOption(TEARDOWN_WAIT_MS)))
+            if (Option.isNone(result)) {
+              yield* Effect.logWarning("instance admission teardown wait expired", { directory, timeoutMs: TEARDOWN_WAIT_MS })
+              yield* removeEntry(directory, existing)
+            }
             return yield* restore(load(input))
           }
           if (existing) return yield* restore(Deferred.await(existing.deferred))
@@ -214,7 +255,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         Effect.gen(function* () {
           const previous = cache.get(directory)
           if (previous?.disposing) {
-            yield* restore(Deferred.await(previous.closed))
+            yield* restore(load(input))
             return yield* restore(reload(input))
           }
           const entry = makeEntry()
@@ -222,12 +263,19 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
           yield* Effect.gen(function* () {
             yield* Effect.logInfo("reloading instance", { directory: directory })
             if (previous) {
-              yield* Deferred.await(previous.deferred).pipe(Effect.ignore)
-              const failures = yield* Effect.promise(() => runDisposers(directory))
-              for (const failure of failures)
-                yield* Effect.logError("instance cleanup failed", { directory, cause: failure.reason })
-              yield* closeEntryScope(directory, previous)
-              yield* emitDisposed({ directory, project: input.project?.id })
+              const old = yield* Deferred.await(previous.deferred).pipe(Effect.option)
+              const work = Effect.gen(function* () {
+                if (ttl > 0) yield* closeEntryScope(directory, previous)
+                const failures = yield* ttl > 0 && Option.isSome(old)
+                  ? InstanceLifetime.dispose(old.value, () => runDisposers(directory))
+                  : Effect.promise(() => runDisposers(directory))
+                for (const failure of failures)
+                  yield* Effect.logError("instance cleanup failed", { directory, cause: failure.reason })
+                if (ttl === 0) yield* closeEntryScope(directory, previous)
+                yield* emitDisposed({ directory, project: input.project?.id })
+              })
+              if (ttl > 0) yield* boundedTeardown(directory, work)
+              else yield* work
             }
             yield* completeLoad(directory, input, entry)
           }).pipe(Effect.forkIn(scope, { startImmediately: true }))
@@ -290,8 +338,10 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         }),
       )
 
-    const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-      ttl === 0
+    const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+      if (ttl > 0 && InstanceLifetime.captureDisposal()?.directory === FSUtil.resolve(input.directory))
+        return Effect.die(new Error(`reentrant directory teardown: ${input.directory}`))
+      return ttl === 0
         ? load(input).pipe(Effect.flatMap((ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))))
         : Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
@@ -301,25 +351,47 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
               )
             }),
           )
+    }
 
+    let lastPinLog = -Infinity
     const sweep = Effect.gen(function* () {
       let disposed = 0
+      let retained = 0
+      const directories: Array<{ directory: string; pins: InstanceLifetime.Kind[]; ageMs: number }> = []
       for (const [directory, entry] of [...cache]) {
-        if (entry.disposing || entry.active || clock.currentTimeMillisUnsafe() - entry.lastUsed < ttl) continue
-        if (!Deferred.isDoneUnsafe(entry.deferred)) continue
+        if (entry.disposing) continue
+        if (!Deferred.isDoneUnsafe(entry.deferred)) {
+          retained++
+          entry.retainedSince ??= entry.lastUsed
+          const ageMs = clock.currentTimeMillisUnsafe() - entry.retainedSince
+          if (ageMs > 2 * ttl) directories.push({ directory, pins: ["bootstrap"], ageMs })
+          continue
+        }
         const exit = yield* Effect.exit(Deferred.await(entry.deferred))
         if (Exit.isFailure(exit)) continue
         const revision = entry.revision
-        const busy = yield* InstanceLifetime.busy(exit.value).pipe(Effect.catchCause((cause) =>
-          Effect.logWarning("instance activity check failed", { directory, cause }).pipe(Effect.as(true)),
-        ))
+        const activity = yield* InstanceLifetime.activity(exit.value)
+        if (cache.get(directory) !== entry || entry.disposing) continue
+        const pins = [...new Set([...entry.pins.values()].map((pin) => pin.kind).concat(activity))]
+        if (entry.active || activity.length) {
+          retained++
+          entry.retainedSince ??= Math.min(entry.lastUsed, ...[...entry.pins.values()].map((pin) => pin.since))
+          const ageMs = clock.currentTimeMillisUnsafe() - entry.retainedSince
+          if (ageMs > 2 * ttl) directories.push({ directory, pins, ageMs })
+          continue
+        }
+        entry.retainedSince = undefined
         // Admission may have happened while the non-creating probes were running.
-        if (busy || entry.active || revision !== entry.revision || cache.get(directory) !== entry) continue
+        if (entry.active || revision !== entry.revision || cache.get(directory) !== entry) continue
         if (entry.disposing || clock.currentTimeMillisUnsafe() - entry.lastUsed < ttl) continue
         yield* Effect.logInfo("idle-disposing instance", { directory, idleMs: clock.currentTimeMillisUnsafe() - entry.lastUsed })
         if (yield* disposeEntry(directory, entry, exit.value, () =>
           !entry.active && entry.revision === revision && clock.currentTimeMillisUnsafe() - entry.lastUsed >= ttl,
         )) disposed++
+      }
+      if (directories.length && clock.currentTimeMillisUnsafe() - lastPinLog >= Math.max(ttl, 300_000)) {
+        lastPinLog = clock.currentTimeMillisUnsafe()
+        yield* Effect.logInfo("idle instance pins", { entries: cache.size, retained, directories })
       }
       if (!disposed) return
       const start = performance.now()

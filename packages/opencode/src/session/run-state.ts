@@ -71,8 +71,10 @@ const layer = Layer.effect(
 
     yield* InstanceLifetime.registerCheck(Effect.gen(function* () {
       if (!(yield* InstanceState.has(state))) return false
-      return [...(yield* InstanceState.get(state)).runners.values()].some((runner) => runner.busy)
-    }))
+      return [...(yield* InstanceState.get(state)).runners.values()].flatMap((runner): InstanceLifetime.Kind[] =>
+        runner.state._tag === "Idle" ? [] : runner.state._tag === "Shell" ? ["shell"] : runner.state._tag === "ShellThenRun" ? ["shell", "runner"] : ["runner"],
+      )
+    }), "runner")
 
     const assertNotBusy = Effect.fn("SessionRunState.assertNotBusy")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
@@ -97,8 +99,8 @@ const layer = Layer.effect(
       work: Effect.Effect<SessionV1.WithParts>,
     ) {
       const current = yield* runner(sessionID, onInterrupt)
-      return yield* current.ensureRunning(InstanceLifetime.hold(work))
-    }, InstanceLifetime.hold)
+      return yield* current.ensureRunning(InstanceLifetime.hold(work, "runner"))
+    }, (effect) => InstanceLifetime.hold(effect, "runner"))
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
       sessionID: SessionID,
@@ -107,9 +109,9 @@ const layer = Layer.effect(
       ready?: Latch.Latch,
     ) {
       return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(InstanceLifetime.hold(work), ready)
+        .startShell(InstanceLifetime.hold(work, "shell"), ready)
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
-    }, InstanceLifetime.hold)
+    }, (effect) => InstanceLifetime.hold(effect, "shell"))
 
     return Service.of({ assertNotBusy, cancel, ensureRunning, startShell })
   }),

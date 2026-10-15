@@ -1,7 +1,15 @@
 import { describe, expect, spyOn } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { ConfigProvider, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { Cause, ConfigProvider, Deferred, Effect, Exit, Fiber, Layer, Logger, Scope } from "effect"
+import { provideInstanceContext } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
+import { WorkspaceRouteContext } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
+import { Workspace } from "../../src/control-plane/workspace"
+import { HttpServerResponse } from "effect/unstable/http"
+import { Git } from "../../src/git"
+import { Vcs } from "../../src/project/vcs"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { InstanceLifetime } from "../../src/effect/instance-lifetime"
 import { TestClock } from "effect/testing"
 import { InstanceRef } from "../../src/effect/instance-ref"
@@ -47,6 +55,172 @@ const idle = (ttl?: number) => testEffect(
     ttl === undefined ? {} : { OPENCODE_INSTANCE_IDLE_TTL_MS: String(ttl) },
   )))),
 )
+
+const gap = (icons: boolean) => testEffect(LayerNode.compile(LayerNode.group([
+  InstanceStore.node, CrossSpawnSpawner.node, Git.node, Vcs.node, FSUtil.node,
+]), [
+  [InstanceStore.bootstrapNode, noopBootstrap],
+  [RuntimeFlags.node, RuntimeFlags.layer({ experimentalIconDiscovery: icons })],
+]).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" })))))
+
+gap(false).effect("R1-L2 Vcs init reserves the gap after its caller returns", () => Effect.gen(function* () {
+  const quiet = yield* tmpdirScoped({ git: true })
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  yield* store.load({ directory: quiet })
+  const ctx = yield* store.load({ directory })
+  const git = yield* Git.Service
+  const vcs = yield* Vcs.Service
+  const entered = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const branch = git.branch
+  const spy = spyOn(git, "branch").mockImplementation((dir) => dir === directory
+    ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(branch(dir)))
+    : branch(dir))
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+  yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+  const disposed: string[] = []
+  yield* registerDisposerScoped(async (dir) => { disposed.push(dir) })
+  yield* vcs.init().pipe(Effect.provideService(InstanceRef, ctx))
+  yield* Deferred.await(entered)
+  yield* TestClock.adjust(8000)
+  expect(disposed).not.toContain(directory)
+  expect(disposed).toContain(quiet)
+  yield* Deferred.succeed(release, undefined)
+}))
+
+gap(true).effect("R1-L2 icon discovery reserves the gap after bootstrap returns", () => Effect.gen(function* () {
+  const quiet = yield* tmpdirScoped({ git: true })
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const fs = yield* FSUtil.Service
+  const entered = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const glob = fs.glob
+  const spy = spyOn(fs, "glob").mockImplementation((pattern, options) => String(pattern).includes("favicon")
+    ? options?.cwd === directory
+      ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as([] as string[]))
+      : Effect.succeed([] as string[])
+    : glob(pattern, options))
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+  yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+  const disposed: string[] = []
+  yield* registerDisposerScoped(async (dir) => { disposed.push(dir) })
+  yield* store.load({ directory: quiet })
+  yield* store.load({ directory })
+  yield* Deferred.await(entered)
+  yield* TestClock.adjust(8000)
+  expect(disposed).not.toContain(directory)
+  expect(disposed).toContain(quiet)
+  yield* Deferred.succeed(release, undefined)
+}))
+
+for (const automatic of [false, true]) idle(2000).effect(`R1-H1 reentrant disposer completes during ${automatic ? "sweep" : "explicit disposal"}`, () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const ctx = yield* store.load({ directory })
+  const result = yield* Deferred.make<Exit.Exit<void, unknown>>()
+  yield* registerDisposerScoped((dir) => dir !== directory ? Promise.resolve() : Effect.runPromise(
+    store.provide({ directory }, Effect.void).pipe(
+      Effect.timeoutOrElse({ duration: 100, orElse: () => Effect.fail(new Error("deadlock guard")) }),
+      Effect.exit,
+      Effect.flatMap((exit) => Deferred.succeed(result, exit)),
+      Effect.asVoid,
+    ),
+  ))
+  if (automatic) yield* TestClock.adjust(4000)
+  else yield* store.dispose(ctx)
+  const exit = yield* Deferred.await(result)
+  expect(Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : "served").toContain("reentrant")
+  expect(yield* store.load({ directory })).not.toBe(ctx)
+}))
+
+idle(2000).effect("R1-H1 admission leaves a stuck teardown after its bound", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const first = yield* store.load({ directory })
+  const started = yield* Deferred.make<() => void>()
+  let calls = 0
+  yield* registerDisposerScoped((dir) => dir !== directory || calls++ > 0 ? Promise.resolve() : new Promise<void>((resolve) => {
+    Deferred.doneUnsafe(started, Effect.succeed(resolve))
+  }))
+  const teardown = yield* store.dispose(first).pipe(Effect.forkScoped)
+  const release = yield* Deferred.await(started)
+  yield* Effect.addFinalizer(() => Effect.sync(release))
+  const admitted = yield* Deferred.make<void>()
+  const request = yield* store.load({ directory }).pipe(Effect.tap(() => Deferred.succeed(admitted, undefined)), Effect.forkScoped)
+  yield* TestClock.adjust(4999)
+  expect(yield* Deferred.isDone(admitted)).toBe(false)
+  yield* TestClock.adjust(1001)
+  const fresh = yield* TestClock.withLive(Fiber.join(request).pipe(Effect.timeout("2 seconds")))
+  expect(fresh).not.toBe(first)
+  yield* TestClock.withLive(Fiber.join(teardown).pipe(Effect.timeout("2 seconds")))
+  yield* Effect.sync(release)
+  yield* Fiber.join(teardown)
+  expect(yield* store.load({ directory })).toBe(fresh)
+}))
+
+const pinLogs: ReadonlyArray<unknown>[] = []
+const logged = testEffect(LayerNode.compile(LayerNode.group([InstanceStore.node, CrossSpawnSpawner.node]), [
+  [InstanceStore.bootstrapNode, noopBootstrap],
+]).pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" }))),
+  Layer.provide(Logger.layer([Logger.make((options) => { pinLogs.push(options.message as ReadonlyArray<unknown>) })])),
+))
+
+logged.effect("R1-M3 aged pins are structured, throttled, and absent for quiet directories", () => Effect.gen(function* () {
+  pinLogs.length = 0
+  const directory = yield* tmpdirScoped({ git: true })
+  const quiet = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  yield* store.load({ directory: quiet })
+  yield* TestClock.adjust(4000)
+  yield* store.disposeAll()
+  expect(pinLogs.filter((line) => line[0] === "idle instance pins")).toHaveLength(0)
+  const ready = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const request = yield* store.provide({ directory }, Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(release)))).pipe(Effect.forkScoped)
+  yield* Deferred.await(ready)
+  const retained = () => pinLogs.filter((line) => line[0] === "idle instance pins")
+  yield* TestClock.adjust(3999)
+  expect(retained()).toHaveLength(0)
+  yield* TestClock.adjust(2001)
+  expect(pinLogs).toContainEqual(expect.arrayContaining(["idle instance pins"]))
+  expect(retained()[0][1]).toMatchObject({ entries: 1, retained: 1, directories: [{ directory, pins: ["request"], ageMs: 5000 }] })
+  yield* TestClock.adjust(290_000)
+  expect(retained()).toHaveLength(1)
+  yield* Deferred.succeed(release, undefined)
+  yield* Fiber.join(request)
+  yield* TestClock.adjust(310_000)
+  expect(retained()).toHaveLength(1)
+}))
+
+for (const ttl of [0, 2000]) idle(ttl).effect(`R1-L1 workspace sync does not capture the request instance TTL=${ttl}`, () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const release = yield* Deferred.make<void>()
+  const seen = yield* Deferred.make<unknown>()
+  const completed = yield* Deferred.make<void>()
+  const scope = yield* Scope.Scope
+  yield* Effect.gen(function* () {
+    const workspace = yield* Workspace.Service
+    yield* provideInstanceContext(Effect.succeed(HttpServerResponse.empty()), store, workspace).pipe(
+      Effect.provideService(WorkspaceRouteContext, WorkspaceRouteContext.of({ directory })),
+    )
+    expect(yield* Deferred.await(seen)).toBeUndefined()
+    yield* store.disposeDirectory(directory)
+    yield* Deferred.succeed(release, undefined)
+    yield* Deferred.await(completed)
+  }).pipe(Effect.provide(Layer.mock(Workspace.Service, {
+    resumeWorkspaceSyncing: () => Effect.gen(function* () {
+      yield* Deferred.succeed(seen, yield* InstanceRef)
+      yield* Deferred.await(release).pipe(
+        Effect.andThen(InstanceLifetime.hold(Deferred.succeed(completed, undefined))),
+        Effect.forkIn(scope),
+      )
+    }),
+  })))
+}))
 
 for (const ttl of [undefined, 0, 2000]) {
   idle(ttl).effect(`idle expiry configuration ${ttl ?? "unset"}`, () =>

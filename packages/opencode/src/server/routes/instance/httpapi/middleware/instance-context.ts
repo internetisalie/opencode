@@ -1,4 +1,4 @@
-import { WorkspaceRef } from "@/effect/instance-ref"
+import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceState } from "@/effect/instance-state"
 import { Workspace } from "@/control-plane/workspace"
@@ -29,12 +29,13 @@ export function provideInstanceContext<E>(
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, WorkspaceRouteContext> {
   return Effect.gen(function* () {
     const route = yield* WorkspaceRouteContext
+    const ambient = yield* InstanceRef
     return yield* store.provide(
       { directory: decode(route.directory) },
       Effect.gen(function* () {
         const ctx = yield* InstanceState.context
         // Loading the project initializes its plugins and registers its adapters.
-        yield* workspace.resumeWorkspaceSyncing(ctx.project.id)
+        yield* workspace.resumeWorkspaceSyncing(ctx.project.id).pipe(Effect.provideService(InstanceRef, ambient))
         return yield* effect.pipe(Effect.provideService(WorkspaceRef, route.workspaceID))
       }),
     )

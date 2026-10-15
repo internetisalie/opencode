@@ -327,7 +327,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
       // WorkspaceRoutingMiddleware has already resolved the persisted session
       // directory, so this reservation belongs to that generation.
-      yield* InstanceLifetime.fork(work, scope, { startImmediately: true })
+      yield* InstanceLifetime.fork(work, scope, { startImmediately: true, kind: "prompt_async" })
       return HttpApiSchema.NoContent.make()
     })
 

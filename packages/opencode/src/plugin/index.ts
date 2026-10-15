@@ -26,6 +26,7 @@ import { SnowflakeCortexAuthPlugin } from "./snowflake-cortex"
 import { Effect, Layer, Context } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { errorMessage } from "@/util/error"
 import { PluginLoader } from "./loader"
 import { parsePluginSpecifier, readPluginId, readV1Plugin, resolvePluginId } from "./shared"
@@ -161,7 +162,7 @@ const layer = Layer.effect(
           baseUrl: serverUrl?.toString() ?? "http://localhost:4096",
           directory: ctx.directory,
           headers: ServerAuth.headers(),
-          ...(serverUrl ? {} : { fetch: async (...args) => Server.Default().app.fetch(...args) }),
+          ...(serverUrl ? {} : { fetch: async (...args) => InstanceLifetime.guard(ctx, () => Server.Default().app.fetch(...args)) }),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {
