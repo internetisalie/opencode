@@ -1,0 +1,14 @@
+diff --git a/src/terminal.ts b/src/terminal.ts
+index ec248d46a939f8a09cd669e853cefb126922c80a..34572e99bd38bd687d5cd15dcf38fe6c19758344 100644
+--- a/src/terminal.ts
++++ b/src/terminal.ts
+@@ -244,6 +244,9 @@ export class Terminal implements IPty {
+ 					this._onData.fire(remaining);
+ 				}
+ 				const exitCode = lib.symbols.bun_pty_get_exit_code(this.handle);
++				// Release the native handle: drops master/slave fds and lets the reader/writer threads exit.
++				this._closing = true;
++				lib.symbols.bun_pty_close(this.handle);
+ 				this._onExit.fire({ exitCode });
+ 				break;
+ 			} else if (n < 0) {
