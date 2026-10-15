@@ -28,7 +28,7 @@ const it = testEffect(
   ]),
 )
 const ptyTest = process.platform === "win32" ? it.live.skip : it.live
-const procTest = existsSync("/proc/self/fd") ? ptyTest : it.live.skip
+const procTest = existsSync("/proc/self/fd") && existsSync("/proc/self/task") ? ptyTest : it.live.skip
 
 const ptyDescriptors = () =>
   Effect.promise(async () => {
@@ -52,6 +52,18 @@ const waitForPtyDescriptors = (baseline: number) =>
       yield* Effect.sleep("10 millis")
     }
     return yield* ptyDescriptors()
+  })
+
+const threadCount = () => Effect.promise(async () => (await readdir("/proc/self/task")).length)
+
+const waitForThreads = (baseline: number) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const count = yield* threadCount()
+      if (count <= baseline) return count
+      yield* Effect.sleep("10 millis")
+    }
+    return yield* threadCount()
   })
 
 const subscribePtyEvents = Effect.fn("PtySessionTest.subscribePtyEvents")(function* () {
@@ -161,11 +173,13 @@ describe("pty", () => {
       const pty = yield* Pty.Service
       const events = yield* subscribePtyEvents()
       const baseline = yield* ptyDescriptors()
+      const threads = yield* threadCount()
       const info = yield* createPty("/usr/bin/env", ["sh", "-c", "exit 3"])
 
       expect(yield* waitForEvents(events, info.id, 2)).toEqual(["created", "exited"])
       expect(yield* pty.get(info.id)).toMatchObject({ status: "exited", exitCode: 3 })
       // Check before removal: the service deliberately retains exited sessions.
+      expect(yield* waitForThreads(threads)).toBeLessThanOrEqual(threads)
       expect(yield* waitForPtyDescriptors(baseline)).toBeLessThanOrEqual(baseline)
     }),
   )
@@ -188,6 +202,8 @@ describe("pty", () => {
           killListener.dispose()
         }),
       )
+      // Include the running PTY's threads; only the short-lived PTY must leave no increase.
+      const threads = yield* threadCount()
       const short = yield* Effect.acquireRelease(
         Effect.sync(() => spawn("/usr/bin/env", ["sh", "-c", "exit 7"], opts)),
         (proc) => Effect.sync(() => proc.kill()),
@@ -201,6 +217,7 @@ describe("pty", () => {
       yield* Effect.addFinalizer(() => Effect.sync(() => exitListener.dispose()))
 
       expect(yield* Deferred.await(exited).pipe(Effect.timeout("5 seconds"))).toMatchObject({ exitCode: 7 })
+      expect(yield* waitForThreads(threads)).toBeLessThanOrEqual(threads)
       expect(() => short.kill()).not.toThrow()
       expect(exits).toEqual([7])
 
