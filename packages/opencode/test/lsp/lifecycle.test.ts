@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect } from "effect"
+import { ConfigProvider, Deferred, Effect, Fiber, Layer } from "effect"
+import { TestClock } from "effect/testing"
+import { InstanceStore } from "@/project/instance-store"
+import { InstanceRef } from "@/effect/instance-ref"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LSP } from "@/lsp/lsp"
 import * as LSPServer from "@/lsp/server"
-import { TestInstance } from "../fixture/fixture"
+import { TestInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(LSP.node))
+const idleIt = testEffect(Layer.mergeAll(
+  LayerNode.compile(LayerNode.group([LSP.node, CrossSpawnSpawner.node])), testInstanceStoreLayer,
+).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" })))))
 
 describe("LSP service lifecycle", () => {
   let spawnSpy: ReturnType<typeof spyOn>
@@ -19,6 +26,32 @@ describe("LSP service lifecycle", () => {
   afterEach(() => {
     spawnSpy.mockRestore()
   })
+
+  idleIt.effect("interrupted LSP wait retains the actual startup promise until settlement", () => Effect.gen(function* () {
+    const directory = yield* tmpdirScoped({ git: true, config: { lsp: true } })
+    const quiet = yield* tmpdirScoped({ git: true })
+    const store = yield* InstanceStore.Service
+    const ctx = yield* store.load({ directory })
+    const other = yield* store.load({ directory: quiet })
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+    spawnSpy.mockImplementation(async () => {
+      Deferred.doneUnsafe(started, Effect.void)
+      await Effect.runPromise(Deferred.await(release))
+      return undefined
+    })
+    const lsp = yield* LSP.Service
+    const startup = yield* lsp.touchFile(path.join(directory, "test.ts")).pipe(Effect.provideService(InstanceRef, ctx), Effect.forkScoped)
+    yield* Deferred.await(started)
+    yield* Fiber.interrupt(startup)
+    yield* TestClock.adjust(4000)
+    expect(yield* store.load({ directory })).toBe(ctx)
+    expect(yield* store.load({ directory: quiet })).not.toBe(other)
+    yield* Deferred.succeed(release, undefined)
+    yield* TestClock.adjust(4000)
+    expect(yield* store.load({ directory })).not.toBe(ctx)
+  }))
 
   it.instance("init() completes without error", () => LSP.Service.use((lsp) => lsp.init()))
 

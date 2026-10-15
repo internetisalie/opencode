@@ -1,7 +1,9 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, spyOn } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Deferred, Effect, Fiber, Layer } from "effect"
+import { ConfigProvider, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { InstanceLifetime } from "../../src/effect/instance-lifetime"
+import { TestClock } from "effect/testing"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { registerDisposer } from "../../src/effect/instance-registry"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
@@ -37,6 +39,160 @@ const registerDisposerScoped = (disposer: (directory: string) => Promise<void>) 
     Effect.sync(() => registerDisposer(disposer)),
     (off) => Effect.sync(off),
   )
+
+const idle = (ttl?: number) => testEffect(
+  LayerNode.compile(LayerNode.group([InstanceStore.node, CrossSpawnSpawner.node]), [
+    [InstanceStore.bootstrapNode, noopBootstrap],
+  ]).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(
+    ttl === undefined ? {} : { OPENCODE_INSTANCE_IDLE_TTL_MS: String(ttl) },
+  )))),
+)
+
+for (const ttl of [undefined, 0, 2000]) {
+  idle(ttl).effect(`idle expiry configuration ${ttl ?? "unset"}`, () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const disposed: string[] = []
+      const gc = spyOn(Bun, "gc")
+      yield* Effect.addFinalizer(() => Effect.sync(() => gc.mockRestore()))
+      yield* registerDisposerScoped(async (directory) => { disposed.push(directory) })
+      const first = yield* store.load({ directory: dir })
+      yield* TestClock.adjust(1999)
+      expect(disposed).toEqual([])
+      yield* TestClock.adjust(120_000)
+      expect(disposed).toEqual(ttl ? [dir] : [])
+      expect(gc).toHaveBeenCalledTimes(ttl ? 1 : 0)
+      const next = yield* store.load({ directory: dir })
+      if (ttl) expect(next).not.toBe(first)
+      else expect(next).toBe(first)
+    }),
+  )
+}
+
+idle(2000).effect("a pre-fork reservation is released even when its target scope is already closed", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const ctx = yield* store.load({ directory })
+  const scope = yield* Scope.make()
+  yield* Scope.close(scope, Exit.void)
+  const fiber = yield* InstanceLifetime.fork(Effect.never, scope).pipe(Effect.provideService(InstanceRef, ctx))
+  yield* Fiber.await(fiber)
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).not.toBe(ctx)
+}))
+
+idle(2000).effect("bootstrap-owned work remains protected after load completes", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const parent = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const parentContext = yield* store.load({ directory: parent })
+  const scope = yield* Scope.Scope
+  const ready = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const done = yield* Deferred.make<void>()
+  yield* setBootstrap(InstanceLifetime.fork(Deferred.succeed(ready, undefined).pipe(
+    Effect.andThen(Deferred.await(release)),
+    Effect.andThen(Deferred.succeed(done, undefined)),
+  ), scope).pipe(Effect.asVoid))
+  const first = yield* store.load({ directory }).pipe(Effect.provideService(InstanceRef, parentContext))
+  yield* Deferred.await(ready)
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).toBe(first)
+  yield* Deferred.succeed(release, undefined)
+  yield* Deferred.await(done)
+  yield* TestClock.adjust(1999)
+  expect(yield* store.load({ directory })).toBe(first)
+  yield* TestClock.adjust(2001)
+  expect(yield* store.load({ directory })).not.toBe(first)
+}))
+
+idle(2000).effect("one changed sweep collects a multi-directory batch exactly once", () => Effect.gen(function* () {
+  const one = yield* tmpdirScoped({ git: true })
+  const two = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const gc = spyOn(Bun, "gc")
+  yield* Effect.addFinalizer(() => Effect.sync(() => gc.mockRestore()))
+  yield* store.load({ directory: one })
+  yield* store.load({ directory: two })
+  yield* TestClock.adjust(4000)
+  expect(gc).toHaveBeenCalledTimes(1)
+  yield* TestClock.adjust(10_000)
+  expect(gc).toHaveBeenCalledTimes(1)
+}))
+
+idle(2000).effect("failed cleanup settles every disposer and is not counted as successful disposal", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const ctx = yield* store.load({ directory })
+  const attempts: string[] = []
+  yield* registerDisposerScoped(async () => { attempts.push("failed"); throw new Error("cleanup failed") })
+  yield* registerDisposerScoped(async () => { attempts.push("finished") })
+  const gc = spyOn(Bun, "gc")
+  yield* Effect.addFinalizer(() => Effect.sync(() => gc.mockRestore()))
+  yield* TestClock.adjust(4000)
+  expect(attempts.sort()).toEqual(["failed", "finished"])
+  expect(gc).toHaveBeenCalledTimes(0)
+  expect(yield* store.load({ directory })).not.toBe(ctx)
+}))
+
+for (const value of ["-1", "1.5", "Infinity", "NaN", "invalid"]) it.live(`rejects invalid idle TTL ${value}`, () => Effect.gen(function* () {
+  const result = yield* Layer.build(Layer.fresh(LayerNode.compile(InstanceStore.node, [
+    [InstanceStore.bootstrapNode, noopBootstrap],
+  ]).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: value })))))).pipe(Effect.exit)
+  expect(Exit.isFailure(result)).toBe(true)
+}))
+
+idle(2000).effect("request ownership resets idle time on release and isolates directories", () =>
+  Effect.gen(function* () {
+    const one = yield* tmpdirScoped({ git: true })
+    const two = yield* tmpdirScoped({ git: true })
+    const store = yield* InstanceStore.Service
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const disposed: string[] = []
+    yield* registerDisposerScoped(async (directory) => { disposed.push(directory) })
+    const first = yield* store.load({ directory: one })
+    yield* store.load({ directory: two })
+    const request = yield* store.provide({ directory: one }, Deferred.succeed(started, undefined).pipe(
+      Effect.andThen(Deferred.await(release)),
+    )).pipe(Effect.forkScoped)
+    yield* Deferred.await(started)
+    yield* TestClock.adjust(5000)
+    expect(disposed).toEqual([two])
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(request)
+    yield* TestClock.adjust(1999)
+    expect(disposed).toEqual([two])
+    yield* TestClock.adjust(2001)
+    expect(disposed).toEqual([two, one])
+    expect(yield* store.load({ directory: one })).not.toBe(first)
+  }),
+)
+
+idle(2000).live("admission waits for teardown and deduplicates recreation", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped({ git: true })
+    const store = yield* InstanceStore.Service
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<() => void>()
+    yield* registerDisposerScoped(() => new Promise<void>((resolve) => {
+      Deferred.doneUnsafe(started, Effect.void)
+      Deferred.doneUnsafe(release, Effect.succeed(resolve))
+    }))
+    const first = yield* store.load({ directory: dir })
+    const teardown = yield* store.dispose(first).pipe(Effect.forkScoped)
+    yield* Deferred.await(started)
+    const next = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+    const concurrent = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+    yield* Effect.yieldNow
+    yield* Effect.sync(yield* Deferred.await(release))
+    yield* Fiber.join(teardown)
+    const [a, b] = yield* Effect.all([Fiber.join(next), Fiber.join(concurrent)])
+    expect(a).not.toBe(first)
+    expect(b).toBe(a)
+  }),
+)
 
 describe("InstanceStore", () => {
   it.live("loads instance context", () =>

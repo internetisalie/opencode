@@ -5,12 +5,13 @@ import { Server } from "../../src/server/server"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir, tmpdirScoped } from "../fixture/fixture"
-import { Config, Effect, Layer, Queue, Schema } from "effect"
+import { Config, ConfigProvider, Effect, Layer, Queue, Schema } from "effect"
+import { registerDisposer } from "../../src/effect/instance-registry"
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { Pty } from "@opencode-ai/core/pty"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const testPty = process.platform === "win32" ? test.skip : test
 
@@ -41,6 +42,52 @@ const effectIt = testEffect(
     ),
   ),
 )
+
+const idleIt = testEffect(servedRoutes.pipe(
+  Layer.provide(Socket.layerWebSocketConstructorGlobal),
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Socket.layerWebSocketConstructorGlobal),
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "200" }))),
+))
+
+for (const natural of [false, true]) idleIt.live(`running PTY without a websocket pins its instance until ${natural ? "natural exit" : "removal"}`, () => Effect.gen(function* () {
+  const dir = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+  const disposed: string[] = []
+  const off = registerDisposer(async (directory) => { disposed.push(directory) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  const response = yield* HttpClientRequest.post(PtyPaths.create).pipe(
+    directoryHeader(dir),
+    HttpClientRequest.bodyJson({ command: "/usr/bin/env", args: ["sh", "-c", natural
+      ? "read line; printf '%s' \"$line\"; while [ ! -e pty-exit ]; do sleep 0.02; done"
+      : "read line; printf '%s' \"$line\""] }),
+    Effect.flatMap(HttpClient.execute),
+  )
+  expect(response.status).toBe(200)
+  const info = yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pty.Info)))
+  expect(info.status).toBe("running")
+  yield* Effect.sleep(2200)
+  expect(disposed).not.toContain(dir)
+  const found = yield* HttpClientRequest.get(PtyPaths.get.replace(":ptyID", info.id)).pipe(directoryHeader(dir), HttpClient.execute)
+  expect(found.status).toBe(200)
+  if (natural) {
+    const url = `${(yield* serverUrl()).replace(/^http/, "ws")}${PtyPaths.connect.replace(":ptyID", info.id)}?cursor=-1&directory=${encodeURIComponent(dir)}`
+    const socket = yield* Socket.makeWebSocket(url, { closeCodeIsError: () => false })
+    const messages = yield* Queue.unbounded<string>()
+    yield* socket.runRaw((message) => Queue.offer(messages, typeof message === "string" ? message : new TextDecoder().decode(message))).pipe(Effect.ignoreCause, Effect.forkScoped)
+    const write = yield* socket.writer
+    yield* write("still-usable\n")
+    yield* pollWithTimeout(Queue.take(messages).pipe(Effect.map((message) => message.includes("still-usable") ? true : undefined)), "PTY could not echo input after TTL")
+    yield* write(new Socket.CloseEvent(1000)).pipe(Effect.ignoreCause)
+    yield* Effect.promise(() => Bun.write(`${dir}/pty-exit`, "exit"))
+  } else {
+    const removed = yield* HttpClientRequest.delete(PtyPaths.remove.replace(":ptyID", info.id)).pipe(directoryHeader(dir), HttpClient.execute)
+    expect(removed.status).toBe(200)
+  }
+  yield* pollWithTimeout(Effect.sync(() => disposed.includes(dir) ? true : undefined), "PTY lease was not released")
+  const recreated = yield* HttpClientRequest.get(PtyPaths.list).pipe(directoryHeader(dir), HttpClient.execute)
+  expect(yield* recreated.json).toEqual([])
+}))
 
 function app() {
   return Server.Default().app

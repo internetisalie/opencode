@@ -1,5 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
@@ -68,6 +69,11 @@ const layer = Layer.effect(
       return next
     })
 
+    yield* InstanceLifetime.registerCheck(Effect.gen(function* () {
+      if (!(yield* InstanceState.has(state))) return false
+      return [...(yield* InstanceState.get(state)).runners.values()].some((runner) => runner.busy)
+    }))
+
     const assertNotBusy = Effect.fn("SessionRunState.assertNotBusy")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
@@ -90,8 +96,9 @@ const layer = Layer.effect(
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
-    })
+      const current = yield* runner(sessionID, onInterrupt)
+      return yield* current.ensureRunning(InstanceLifetime.hold(work))
+    }, InstanceLifetime.hold)
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
       sessionID: SessionID,
@@ -100,9 +107,9 @@ const layer = Layer.effect(
       ready?: Latch.Latch,
     ) {
       return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(work, ready)
+        .startShell(InstanceLifetime.hold(work), ready)
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
-    })
+    }, InstanceLifetime.hold)
 
     return Service.of({ assertNotBusy, cancel, ensureRunning, startShell })
   }),

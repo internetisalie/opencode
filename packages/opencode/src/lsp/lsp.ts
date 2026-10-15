@@ -10,6 +10,7 @@ import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -209,7 +210,7 @@ const layer = Layer.effect(
       const ctx = yield* InstanceState.context
       if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
       const s = yield* InstanceState.get(state)
-      const clients = yield* Effect.promise(async () => {
+      const clients = yield* InstanceLifetime.promise(async () => {
         const extension = path.parse(file).ext || file
         const result: LSPClient.Info[] = []
         let updated = 0
@@ -298,13 +299,13 @@ const layer = Layer.effect(
 
     const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) {
       const clients = yield* getClients(file)
-      return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x))))
-    })
+      return yield* InstanceLifetime.all(clients.map((client) => () => fn(client)))
+    }, InstanceLifetime.hold)
 
     const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
       const s = yield* InstanceState.get(state)
-      return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
-    })
+      return yield* InstanceLifetime.all(s.clients.map((client) => () => fn(client)))
+    }, InstanceLifetime.hold)
 
     const init = Effect.fn("LSP.init")(function* () {
       yield* InstanceState.get(state)
@@ -344,22 +345,19 @@ const layer = Layer.effect(
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
       yield* Effect.logInfo("touching file", { file: input })
       const clients = yield* getClients(input)
-      yield* Effect.promise(() =>
-        Promise.all(
-          clients.map(async (client) => {
-            const after = Date.now()
-            const version = await client.notify.open({ path: input })
-            if (!diagnostics) return
-            return client.waitForDiagnostics({
-              path: input,
-              version,
-              mode: diagnostics,
-              after,
-            })
-          }),
-        ).catch(() => {}),
-      )
-    })
+      const enabled = yield* InstanceLifetime.enabled
+      yield* InstanceLifetime.promise(() => {
+        const pending = clients.map(async (client) => {
+          const after = Date.now()
+          const version = await client.notify.open({ path: input })
+          if (!diagnostics) return
+          return client.waitForDiagnostics({ path: input, version, mode: diagnostics, after })
+        })
+        return enabled
+          ? Promise.allSettled(pending).then(() => {})
+          : Promise.all(pending).then(() => {}).catch(() => {})
+      })
+    }, InstanceLifetime.hold)
 
     const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
       const results: Record<string, LSPClient.Diagnostic[]> = {}

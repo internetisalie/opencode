@@ -1,15 +1,26 @@
 import { describe, expect, spyOn } from "bun:test"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Deferred, Effect, Layer } from "effect"
+import { ConfigProvider, Deferred, Effect, Fiber, Layer } from "effect"
+import { LSPClient } from "@/lsp/client"
+import { InstanceRef } from "@/effect/instance-ref"
+import { InstanceStore } from "@/project/instance-store"
+import { registerDisposer } from "@/effect/instance-registry"
+import { Instruction } from "@/session/instruction"
+import { ReadTool } from "@/tool/read"
+import { Truncate } from "@/tool/truncate"
+import { Agent } from "@/agent/agent"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { SessionID, MessageID } from "@/session/schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LSP } from "@/lsp/lsp"
 import * as LSPServer from "@/lsp/server"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { TestInstance } from "../fixture/fixture"
-import { awaitWithTimeout, testEffect } from "../lib/effect"
+import { TestInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 
 const lspLayer = (flags: Parameters<typeof RuntimeFlags.layer>[0] = {}) =>
   LayerNode.compile(LayerNode.group([LSP.node, Config.node, RuntimeFlags.node, EventV2Bridge.node]), [
@@ -21,6 +32,92 @@ const experimentalTyIt = testEffect(
   Layer.mergeAll(lspLayer({ experimentalLspTy: true }), LayerNode.compile(CrossSpawnSpawner.node)),
 )
 const fakeServerPath = path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")
+const idleIt = testEffect(Layer.mergeAll(
+  lspLayer(), testInstanceStoreLayer,
+  LayerNode.compile(LayerNode.group([CrossSpawnSpawner.node, Instruction.node, FSUtil.node, Truncate.node, Agent.node, Ripgrep.node])),
+).pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "200" })))))
+
+for (const fail of [false, true]) idleIt.live(`read warm and active LSP startup/file touch pin the directory through ${fail ? "error" : "completion"}`, () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true, config: { lsp: { fake: { command: [process.execPath, fakeServerPath], extensions: [".repro"] } } } })
+  const quiet = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const ctx = yield* store.load({ directory })
+  yield* store.load({ directory: quiet })
+  const disposed: string[] = []
+  const off = registerDisposer(async (dir) => { disposed.push(dir) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  const starting = yield* Deferred.make<void>()
+  const initialize = yield* Deferred.make<void>()
+  const opening = yield* Deferred.make<void>()
+  const opened = yield* Deferred.make<void>()
+  const original = LSPClient.create
+  const pending: Promise<LSPClient.Info>[] = []
+  const clients: LSPClient.Info[] = []
+  const spy = spyOn(LSPClient, "create").mockImplementation((input) => {
+    Deferred.doneUnsafe(starting, Effect.void)
+    const task = Effect.runPromise(Deferred.await(initialize)).then(() => original(input)).then((client) => {
+      clients.push(client)
+      const open = client.notify.open
+      client.notify.open = async (input) => {
+        Deferred.doneUnsafe(opening, Effect.void)
+        await Effect.runPromise(Deferred.await(opened))
+        if (fail) throw new Error("file touch failed")
+        await client.connection.sendNotification("test/publish-diagnostics", { uri: "file:///unsolicited", diagnostics: [] })
+        return open(input)
+      }
+      return client
+    })
+    pending.push(task)
+    return task
+  })
+  yield* Effect.addFinalizer(() => Effect.sync(() => { spy.mockRestore(); Deferred.doneUnsafe(initialize, Effect.void); Deferred.doneUnsafe(opened, Effect.void) }).pipe(
+    Effect.andThen(Effect.promise(() => Promise.allSettled(pending))), Effect.asVoid,
+  ))
+  const filePath = path.join(directory, "sample.repro")
+  yield* Effect.promise(() => Bun.write(filePath, "hello\n"))
+  const result = yield* Effect.gen(function* () {
+    const definition = yield* ReadTool
+    const tool = yield* definition.init()
+    return yield* tool.execute({ filePath }, { sessionID: SessionID.make("ses_test"), messageID: MessageID.make("msg_test"), callID: "read", agent: "build", abort: new AbortController().signal, messages: [], metadata: () => Effect.void, ask: () => Effect.void })
+  }).pipe(Effect.provideService(InstanceRef, ctx))
+  expect(result.output).toContain("hello")
+  yield* awaitWithTimeout(Deferred.await(starting), "warm did not start the fixture")
+  yield* pollWithTimeout(Effect.sync(() => disposed.includes(quiet) ? true : undefined), "quiet directory did not expire")
+  yield* Effect.sleep(1200)
+  expect(disposed).not.toContain(directory)
+  expect(yield* store.load({ directory })).toBe(ctx)
+  yield* Deferred.succeed(initialize, undefined)
+  yield* awaitWithTimeout(Deferred.await(opening), "fixture did not initialize")
+  yield* Effect.sleep(2200)
+  expect(disposed).not.toContain(directory)
+  yield* Deferred.succeed(opened, undefined)
+  const client = clients[0]
+  const rpcReady = yield* Deferred.make<void>()
+  const rpcRelease = yield* Deferred.make<void>()
+  const send = client.connection.sendRequest
+  let requests = 0
+  client.connection.sendRequest = new Proxy(send, {
+    apply(target, self, args) {
+      if (args[0] !== "textDocument/hover" && args[0] !== "workspace/symbol") return Reflect.apply(target, self, args)
+      if (++requests === 2) Deferred.doneUnsafe(rpcReady, Effect.void)
+      return Effect.runPromise(Deferred.await(rpcRelease)).then(() => Reflect.apply(target, self, args))
+    },
+  })
+  yield* Effect.addFinalizer(() => Deferred.succeed(rpcRelease, undefined).pipe(Effect.asVoid))
+  const lsp = yield* LSP.Service
+  const hover = yield* lsp.hover({ file: filePath, line: 0, character: 0 }).pipe(Effect.provideService(InstanceRef, ctx), Effect.forkScoped)
+  const symbols = yield* lsp.workspaceSymbol("hello").pipe(Effect.provideService(InstanceRef, ctx), Effect.forkScoped)
+  yield* awaitWithTimeout(Deferred.await(rpcReady), "LSP RPCs did not start")
+  yield* Effect.sleep(2200)
+  expect(disposed).not.toContain(directory)
+  yield* Fiber.interrupt(hover)
+  yield* Effect.sleep(1200)
+  expect(disposed).not.toContain(directory)
+  yield* Deferred.succeed(rpcRelease, undefined)
+  yield* Fiber.join(symbols)
+  yield* pollWithTimeout(Effect.sync(() => disposed.includes(directory) ? true : undefined), "LSP operation did not release its lease")
+  expect(yield* store.load({ directory })).not.toBe(ctx)
+}))
 const disabledDownloadIt = testEffect(
   Layer.mergeAll(lspLayer({ disableLspDownload: true }), LayerNode.compile(CrossSpawnSpawner.node)),
 )
