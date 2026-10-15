@@ -559,6 +559,7 @@ export const ShellTool = Tool.define(
       ).pipe(Effect.orDie)
 
       const meta: string[] = []
+      if (code !== null) meta.push(`exit=${code}`)
       if (expired) {
         meta.push(
           `shell tool terminated command after exceeding timeout ${input.timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
