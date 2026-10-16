@@ -52,6 +52,7 @@ import { sessionOwnershipLayer } from "./middleware/session-ownership"
 import { ServerInfo } from "./server-info"
 import { pluginRoutes } from "./plugin-routes"
 import type { ServerOptions } from "./options"
+import { RemoteEventConfig } from "./remote-events"
 
 const applicationServiceNodes = [
   Global.node,
@@ -189,7 +190,13 @@ function makeRoutes<AuthError, AuthServices>(
         ServerInfo.layer(serviceURLs, Context.get(context, Global.Service).tmp, options.app),
       )
       const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-        Layer.provide(handlers.pipe(Layer.provide(services), Layer.provide(Layer.succeed(CorsConfig, options)))),
+        Layer.provide(
+          handlers.pipe(
+            Layer.provide(services),
+            Layer.provide(Layer.succeed(CorsConfig, options)),
+            Layer.provide(Layer.succeed(RemoteEventConfig, options.remoteProxy)),
+          ),
+        ),
         Layer.provide(formLocationLayer),
         Layer.provide(sessionLocationLayer),
         Layer.provide(sessionOwnershipLayer),
