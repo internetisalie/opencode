@@ -46,6 +46,13 @@ interface Entry {
   retainedSince?: number
 }
 
+interface DisposalReport {
+  readonly directory: string
+  readonly project?: string
+  late: boolean
+  notified: boolean
+}
+
 const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -159,11 +166,36 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         }),
       )
 
-    const disposeContext = Effect.fn("InstanceStore.disposeContext")(function* (ctx: InstanceContext) {
+    const notifyDisposed = (report: DisposalReport) => Effect.uninterruptible(Effect.suspend(() => {
+      if (report.notified) return Effect.void
+      report.notified = true
+      return emitDisposed(report)
+    }))
+
+    const observeDisposers = (report: DisposalReport, ctx?: InstanceContext) => Effect.gen(function* () {
+      // This observer belongs to the native cleanup promise, not to the
+      // cancellable deadline wait. It only logs; late completion must neither
+      // notify subscribers again nor touch a replacement generation's state.
+      const context = yield* Effect.context<never>()
+      const log = Effect.runPromiseWith(context)
+      const run = () => runDisposers(report.directory).then((failures) => log(Effect.gen(function* () {
+        const late = report.late ? { late: true } : {}
+        for (const failure of failures)
+          yield* Effect.logError("instance cleanup failed", { directory: report.directory, cause: failure.reason, ...late })
+        yield* Effect.logInfo("instance disposal finished", { directory: report.directory, cleanupFailures: failures.length, ...late })
+      })).then(() => failures))
+      return yield* ctx ? InstanceLifetime.dispose(ctx, run) : Effect.promise(run)
+    })
+
+    const disposeContext = Effect.fn("InstanceStore.disposeContext")(function* (ctx: InstanceContext, report?: DisposalReport) {
       yield* Effect.logInfo("disposing instance", { directory: ctx.directory })
-      const failures = yield* ttl > 0
-        ? InstanceLifetime.dispose(ctx, () => runDisposers(ctx.directory))
-        : Effect.promise(() => runDisposers(ctx.directory))
+      if (ttl > 0) {
+        const outcome = report ?? { directory: ctx.directory, project: ctx.project.id, late: false, notified: false }
+        const failures = yield* observeDisposers(outcome, ctx)
+        yield* notifyDisposed(outcome)
+        return failures.length === 0
+      }
+      const failures = yield* Effect.promise(() => runDisposers(ctx.directory))
       for (const failure of failures)
         yield* Effect.logError("instance cleanup failed", { directory: ctx.directory, cause: failure.reason })
       yield* Effect.logInfo("instance disposal finished", { directory: ctx.directory, cleanupFailures: failures.length })
@@ -176,12 +208,14 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       Effect.catchCause((cause) => Effect.logError("instance location retention cleanup failed", { directory, cause }).pipe(Effect.as(false))),
     )
 
-    const boundedTeardown = <A>(directory: string, effect: Effect.Effect<A>) => effect.pipe(
+    const boundedTeardown = <A>(report: DisposalReport, effect: Effect.Effect<A>) => effect.pipe(
       Effect.interruptible,
       Effect.timeoutOption(TEARDOWN_WAIT_MS),
-      Effect.tap((result) => Option.isNone(result)
-        ? Effect.logWarning("instance teardown deadline exceeded", { directory, timeoutMs: TEARDOWN_WAIT_MS })
-        : Effect.void),
+      Effect.tap((result) => Option.isNone(result) ? Effect.gen(function* () {
+        report.late = true
+        yield* Effect.logWarning("instance teardown deadline exceeded", { directory: report.directory, timeoutMs: TEARDOWN_WAIT_MS })
+        yield* notifyDisposed(report)
+      }) : Effect.void),
     )
 
     const disposeEntry = Effect.fnUntraced(function* (directory: string, entry: Entry, ctx: InstanceContext, eligible?: () => boolean) {
@@ -195,6 +229,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         entry.disposing = true
       }
       return yield* Effect.gen(function* () {
+        const report: DisposalReport = { directory, project: ctx.project.id, late: false, notified: false }
         let closed = false
         const work = ttl > 0
           ? Effect.gen(function* () {
@@ -202,12 +237,12 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
               // Idle sweeps can only reach here once all pins have gone idle.
               closed = yield* closeEntryScope(directory, entry)
               if (cache.get(directory) !== entry) return false
-              return yield* disposeContext(ctx)
+              return yield* disposeContext(ctx, report)
             })
           : disposeContext(ctx).pipe(Effect.ensuring(
               closeEntryScope(directory, entry).pipe(Effect.tap((result) => Effect.sync(() => { closed = result }))),
             ))
-        const result = yield* ttl > 0 ? boundedTeardown(directory, work) : work.pipe(Effect.map(Option.some))
+        const result = yield* ttl > 0 ? boundedTeardown(report, work) : work.pipe(Effect.map(Option.some))
         const disposed = Option.isSome(result) && result.value
         return disposed && closed && cache.get(directory) === entry
       }).pipe(Effect.ensuring(Effect.gen(function* () {
@@ -223,9 +258,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         Effect.gen(function* () {
           const existing = cache.get(directory)
           if (ttl > 0) {
-            const ambient = yield* InstanceRef
-            if (((yield* InstanceLifetime.disposing) ?? caller)?.directory === directory ||
-                (ambient?.directory === directory && InstanceLifetime.isClosing(ambient)))
+            if (((yield* InstanceLifetime.disposing) ?? caller)?.directory === directory)
               return yield* Effect.die(new Error(`reentrant directory teardown: ${directory}`))
           }
           if (existing?.disposing) {
@@ -264,17 +297,24 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
             yield* Effect.logInfo("reloading instance", { directory: directory })
             if (previous) {
               const old = yield* Deferred.await(previous.deferred).pipe(Effect.option)
+              const report: DisposalReport = {
+                directory, project: input.project?.id,
+                late: false, notified: false,
+              }
               const work = Effect.gen(function* () {
-                if (ttl > 0) yield* closeEntryScope(directory, previous)
-                const failures = yield* ttl > 0 && Option.isSome(old)
-                  ? InstanceLifetime.dispose(old.value, () => runDisposers(directory))
-                  : Effect.promise(() => runDisposers(directory))
+                if (ttl > 0) {
+                  yield* closeEntryScope(directory, previous)
+                  yield* observeDisposers(report, Option.isSome(old) ? old.value : undefined)
+                  yield* notifyDisposed(report)
+                  return
+                }
+                const failures = yield* Effect.promise(() => runDisposers(directory))
                 for (const failure of failures)
                   yield* Effect.logError("instance cleanup failed", { directory, cause: failure.reason })
-                if (ttl === 0) yield* closeEntryScope(directory, previous)
+                yield* closeEntryScope(directory, previous)
                 yield* emitDisposed({ directory, project: input.project?.id })
               })
-              if (ttl > 0) yield* boundedTeardown(directory, work)
+              if (ttl > 0) yield* boundedTeardown(report, work)
               else yield* work
             }
             yield* completeLoad(directory, input, entry)

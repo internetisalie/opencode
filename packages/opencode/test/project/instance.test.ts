@@ -1,7 +1,9 @@
 import { describe, expect, spyOn } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Cause, ConfigProvider, Deferred, Effect, Exit, Fiber, Layer, Logger, Scope } from "effect"
+import { Cause, ConfigProvider, Deferred, Effect, Exit, Fiber, Layer, Logger, Option, Scope } from "effect"
+import { EffectBridge } from "../../src/effect/bridge"
+import { GlobalBus } from "../../src/bus/global"
 import { provideInstanceContext } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
 import { WorkspaceRouteContext } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
 import { Workspace } from "../../src/control-plane/workspace"
@@ -55,6 +57,90 @@ const idle = (ttl?: number) => testEffect(
     ttl === undefined ? {} : { OPENCODE_INSTANCE_IDLE_TTL_MS: String(ttl) },
   )))),
 )
+
+idle(2000).effect("R2-L2 reload with the old request context waits for an in-flight explicit dispose", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const first = yield* store.load({ directory })
+  const bridge = yield* EffectBridge.make().pipe(Effect.provideService(InstanceRef, first))
+  const started = yield* Deferred.make<() => void>()
+  let calls = 0
+  yield* registerDisposerScoped((dir) => dir !== directory || calls++ > 0 ? Promise.resolve() : new Promise<void>((resolve) => {
+    Deferred.doneUnsafe(started, Effect.succeed(resolve))
+  }))
+  const teardown = yield* store.dispose(first).pipe(Effect.forkScoped)
+  const release = yield* Deferred.await(started)
+  yield* Effect.addFinalizer(() => Effect.sync(release))
+  const reload = yield* bridge.run(store.reload({ directory })).pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }))
+  yield* Effect.sync(release)
+  yield* Fiber.join(teardown)
+  const result = yield* Fiber.join(reload)
+  expect(Exit.isSuccess(result)).toBe(true)
+  if (Exit.isSuccess(result)) {
+    expect(result.value).not.toBe(first)
+    expect(yield* store.load({ directory })).toBe(result.value)
+  }
+}))
+
+idle(2000).effect("R2-L2 provide with a completed generation's request context recreates the directory", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const first = yield* store.load({ directory })
+  yield* store.dispose(first)
+  const result = yield* store.provide({ directory }, InstanceRef).pipe(Effect.provideService(InstanceRef, first), Effect.exit)
+  expect(Exit.isSuccess(result)).toBe(true)
+  if (Exit.isSuccess(result)) {
+    expect(result.value?.directory).toBe(directory)
+    expect(result.value).not.toBe(first)
+  }
+  // An old request ref is not a teardown marker. The genuine fiber-scoped
+  // marker must still reject access, including after a replacement has booted.
+  const reentrant = yield* store.provide({ directory }, Effect.void).pipe(
+    Effect.provideService(InstanceLifetime.disposing, first), Effect.exit,
+  )
+  expect(Exit.isFailure(reentrant) ? String(Cause.squash(reentrant.cause)) : "served").toContain("reentrant")
+}))
+
+for (const reload of [false, true]) idle(2000).effect(`R2-L3 timed-out ${reload ? "reload" : "dispose"} notifies release and reports late cleanup failure`, () => Effect.gen(function* () {
+  const messages: ReadonlyArray<unknown>[] = []
+  const finished = yield* Deferred.make<void>()
+  const logger = Logger.make((options) => {
+    const message = options.message as ReadonlyArray<unknown>
+    messages.push(message)
+    if (message[0] === "instance disposal finished") Deferred.doneUnsafe(finished, Effect.void)
+  })
+  yield* Effect.gen(function* () {
+    const directory = yield* tmpdirScoped({ git: true })
+    const store = yield* InstanceStore.Service
+    const first = yield* store.load({ directory })
+    let events = 0
+    const listener = (event: { directory?: string; payload: { type?: string } }) => {
+      if (event.directory === directory && event.payload.type === "server.instance.disposed") events++
+    }
+    GlobalBus.on("event", listener)
+    yield* Effect.addFinalizer(() => Effect.sync(() => GlobalBus.off("event", listener)))
+    const started = yield* Deferred.make<(reason: Error) => void>()
+    let calls = 0
+    yield* registerDisposerScoped((dir) => dir !== directory || calls++ > 0 ? Promise.resolve() : new Promise<void>((_, reject) => {
+      Deferred.doneUnsafe(started, Effect.succeed(reject))
+    }))
+    const operation = yield* (reload ? store.reload({ directory }).pipe(Effect.asVoid) : store.dispose(first)).pipe(Effect.forkScoped)
+    const reject = yield* Deferred.await(started)
+    const failure = new Error("R2 late disposer failure")
+    yield* Effect.addFinalizer(() => Effect.sync(() => reject(failure)))
+    yield* TestClock.adjust(6000)
+    yield* TestClock.withLive(Fiber.join(operation).pipe(Effect.timeout("2 seconds")))
+    const eventsAtDeadline = events
+    const fresh = yield* store.load({ directory })
+    yield* Effect.sync(() => reject(failure))
+    const late = yield* TestClock.withLive(Deferred.await(finished).pipe(Effect.timeoutOption(250)))
+    expect({ eventsAtDeadline, lateOutcome: Option.isSome(late) }).toEqual({ eventsAtDeadline: 1, lateOutcome: true })
+    expect(messages).toContainEqual(["instance cleanup failed", { directory, cause: failure, late: true }])
+    expect(messages).toContainEqual(["instance disposal finished", { directory, cleanupFailures: 1, late: true }])
+    expect(events).toBe(1)
+    expect(yield* store.load({ directory })).toBe(fresh)
+  }).pipe(Effect.provide(Logger.layer([logger])))
+}))
 
 const gap = (icons: boolean) => testEffect(LayerNode.compile(LayerNode.group([
   InstanceStore.node, CrossSpawnSpawner.node, Git.node, Vcs.node, FSUtil.node,

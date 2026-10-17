@@ -162,7 +162,13 @@ const layer = Layer.effect(
           baseUrl: serverUrl?.toString() ?? "http://localhost:4096",
           directory: ctx.directory,
           headers: ServerAuth.headers(),
-          ...(serverUrl ? {} : { fetch: async (...args) => InstanceLifetime.guard(ctx, () => Server.Default().app.fetch(...args)) }),
+          fetch: async (request) => InstanceLifetime.guard(ctx, () => {
+            if (!serverUrl) return Server.Default().app.fetch(request)
+            // Preserve the SDK's default served-fetch timeout setting while
+            // guarding the same generation on both transports.
+            Reflect.set(request, "timeout", false)
+            return fetch(request)
+          }),
         })
         const cfg = yield* config.get()
         const input: PluginInput = {
