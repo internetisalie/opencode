@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { BackgroundJob as CoreBackgroundJob } from "@opencode-ai/core/background-job"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { Effect, Layer } from "effect"
 
 export {
@@ -18,12 +19,16 @@ export {
 const layer = Layer.effect(
   CoreBackgroundJob.Service,
   Effect.gen(function* () {
-    const state = yield* InstanceState.make(() => CoreBackgroundJob.make)
+    const state = yield* InstanceState.make(() => CoreBackgroundJob.makeWith(InstanceLifetime.lease("job")))
+    yield* InstanceLifetime.registerCheck(Effect.gen(function* () {
+      if (!(yield* InstanceState.has(state))) return false
+      return (yield* InstanceState.useEffect(state, (jobs) => jobs.list())).some((job) => job.status === "running")
+    }), "job")
     return CoreBackgroundJob.Service.of({
       list: () => InstanceState.useEffect(state, (jobs) => jobs.list()),
       get: (id) => InstanceState.useEffect(state, (jobs) => jobs.get(id)),
-      start: (input) => InstanceState.useEffect(state, (jobs) => jobs.start(input)),
-      extend: (input) => InstanceState.useEffect(state, (jobs) => jobs.extend(input)),
+      start: (input) => InstanceLifetime.hold(InstanceState.useEffect(state, (jobs) => jobs.start(input)), "job"),
+      extend: (input) => InstanceLifetime.hold(InstanceState.useEffect(state, (jobs) => jobs.extend(input)), "job"),
       wait: (input) => InstanceState.useEffect(state, (jobs) => jobs.wait(input)),
       waitForPromotion: (id) => InstanceState.useEffect(state, (jobs) => jobs.waitForPromotion(id)),
       promote: (id) => InstanceState.useEffect(state, (jobs) => jobs.promote(id)),

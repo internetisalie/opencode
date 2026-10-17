@@ -10,6 +10,7 @@ import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -209,7 +210,7 @@ const layer = Layer.effect(
       const ctx = yield* InstanceState.context
       if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
       const s = yield* InstanceState.get(state)
-      const clients = yield* Effect.promise(async () => {
+      const clients = yield* InstanceLifetime.promise(async () => {
         const extension = path.parse(file).ext || file
         const result: LSPClient.Info[] = []
         let updated = 0
@@ -289,22 +290,22 @@ const layer = Layer.effect(
         }
 
         return { result, updated }
-      })
+      }, "LSP.startup")
       yield* Effect.forEach(Array.from({ length: clients.updated }), () => events.publish(Event.Updated, {}), {
         discard: true,
       })
       return clients.result
     })
 
-    const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) {
+    const run = Effect.fnUntraced(function* <T>(operation: string, file: string, fn: (client: LSPClient.Info) => Promise<T>) {
       const clients = yield* getClients(file)
-      return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x))))
-    })
+      return yield* InstanceLifetime.all(clients.map((client) => () => fn(client)), operation)
+    }, (effect) => InstanceLifetime.hold(effect, "lsp"))
 
-    const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
+    const runAll = Effect.fnUntraced(function* <T>(operation: string, fn: (client: LSPClient.Info) => Promise<T>) {
       const s = yield* InstanceState.get(state)
-      return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
-    })
+      return yield* InstanceLifetime.all(s.clients.map((client) => () => fn(client)), operation)
+    }, (effect) => InstanceLifetime.hold(effect, "lsp"))
 
     const init = Effect.fn("LSP.init")(function* () {
       yield* InstanceState.get(state)
@@ -344,26 +345,23 @@ const layer = Layer.effect(
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
       yield* Effect.logInfo("touching file", { file: input })
       const clients = yield* getClients(input)
-      yield* Effect.promise(() =>
-        Promise.all(
-          clients.map(async (client) => {
-            const after = Date.now()
-            const version = await client.notify.open({ path: input })
-            if (!diagnostics) return
-            return client.waitForDiagnostics({
-              path: input,
-              version,
-              mode: diagnostics,
-              after,
-            })
-          }),
-        ).catch(() => {}),
-      )
-    })
+      const enabled = yield* InstanceLifetime.enabled
+      yield* InstanceLifetime.promise(() => {
+        const pending = clients.map(async (client) => {
+          const after = Date.now()
+          const version = await client.notify.open({ path: input })
+          if (!diagnostics) return
+          return client.waitForDiagnostics({ path: input, version, mode: diagnostics, after })
+        })
+        return enabled
+          ? Promise.allSettled(pending).then(() => {})
+          : Promise.all(pending).then(() => {}).catch(() => {})
+      }, "LSP.touchFile")
+    }, (effect) => InstanceLifetime.hold(effect, "lsp"))
 
     const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
       const results: Record<string, LSPClient.Diagnostic[]> = {}
-      const all = yield* runAll(async (client) => client.diagnostics)
+      const all = yield* runAll("LSP.diagnostics", async (client) => client.diagnostics)
       for (const result of all) {
         for (const [p, diags] of result.entries()) {
           const arr = results[p] || []
@@ -375,7 +373,7 @@ const layer = Layer.effect(
     })
 
     const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {
-      return yield* run(input.file, (client) =>
+      return yield* run("LSP.hover", input.file, (client) =>
         client.connection
           .sendRequest("textDocument/hover", {
             textDocument: { uri: pathToFileURL(input.file).href },
@@ -386,7 +384,7 @@ const layer = Layer.effect(
     })
 
     const definition = Effect.fn("LSP.definition")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run("LSP.definition", input.file, (client) =>
         client.connection
           .sendRequest("textDocument/definition", {
             textDocument: { uri: pathToFileURL(input.file).href },
@@ -398,7 +396,7 @@ const layer = Layer.effect(
     })
 
     const references = Effect.fn("LSP.references")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run("LSP.references", input.file, (client) =>
         client.connection
           .sendRequest("textDocument/references", {
             textDocument: { uri: pathToFileURL(input.file).href },
@@ -411,7 +409,7 @@ const layer = Layer.effect(
     })
 
     const implementation = Effect.fn("LSP.implementation")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run("LSP.implementation", input.file, (client) =>
         client.connection
           .sendRequest("textDocument/implementation", {
             textDocument: { uri: pathToFileURL(input.file).href },
@@ -424,14 +422,14 @@ const layer = Layer.effect(
 
     const documentSymbol = Effect.fn("LSP.documentSymbol")(function* (uri: string) {
       const file = fileURLToPath(uri)
-      const results = yield* run(file, (client) =>
+      const results = yield* run("LSP.documentSymbol", file, (client) =>
         client.connection.sendRequest("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => []),
       )
       return (results.flat() as (DocumentSymbol | Symbol)[]).filter(Boolean)
     })
 
     const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string) {
-      const results = yield* runAll((client) =>
+      const results = yield* runAll("LSP.workspaceSymbol", (client) =>
         client.connection
           .sendRequest<Symbol[]>("workspace/symbol", { query })
           .then((result) => result.filter((x) => kinds.includes(x.kind)).slice(0, 10))
@@ -441,7 +439,7 @@ const layer = Layer.effect(
     })
 
     const prepareCallHierarchy = Effect.fn("LSP.prepareCallHierarchy")(function* (input: LocInput) {
-      const results = yield* run(input.file, (client) =>
+      const results = yield* run("LSP.prepareCallHierarchy", input.file, (client) =>
         client.connection
           .sendRequest("textDocument/prepareCallHierarchy", {
             textDocument: { uri: pathToFileURL(input.file).href },
@@ -456,7 +454,7 @@ const layer = Layer.effect(
       input: LocInput,
       direction: "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls",
     ) {
-      const results = yield* run(input.file, async (client) => {
+      const results = yield* run(direction, input.file, async (client) => {
         const items = await client.connection
           .sendRequest<unknown[] | null>("textDocument/prepareCallHierarchy", {
             textDocument: { uri: pathToFileURL(input.file).href },

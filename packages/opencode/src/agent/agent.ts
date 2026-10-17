@@ -1,4 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { LegacyLocations } from "@/effect/legacy-locations"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Config } from "@/config/config"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -94,6 +96,7 @@ const layer = Layer.effect(
     const skill = yield* Skill.Service
     const provider = yield* Provider.Service
     const locations = yield* LocationServiceMap.Service
+    yield* LegacyLocations.register(locations)
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Agent.state")(function* (ctx) {
@@ -101,6 +104,7 @@ const layer = Layer.effect(
         const skillDirs = yield* skill.dirs()
         const referenceDirs = Object.keys(cfg.references ?? cfg.reference ?? {}).length
           ? yield* Effect.gen(function* () {
+              yield* InstanceLifetime.retain(locations, locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) })))
               yield* (yield* PluginV2.Service).wait(PluginV2.ID.make("core/config-reference"))
               return (yield* (yield* Reference.Service).list()).map((reference) => reference.path)
             }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))

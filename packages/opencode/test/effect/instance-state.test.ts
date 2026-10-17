@@ -2,8 +2,14 @@ import { expect } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { $ } from "bun"
-import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { ConfigProvider, Context, Deferred, Duration, Effect, Exit, Fiber, Layer, LayerMap } from "effect"
+import { LegacyLocations } from "@/effect/legacy-locations"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { TestClock } from "effect/testing"
+import { InstanceStore } from "@/project/instance-store"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import {
   disposeAllInstancesEffect,
   provideInstanceEffect,
@@ -14,6 +20,61 @@ import {
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.mergeAll(LayerNode.compile(CrossSpawnSpawner.node), testInstanceStoreLayer))
+const idleIt = testEffect(Layer.mergeAll(LayerNode.compile(CrossSpawnSpawner.node), testInstanceStoreLayer).pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" }))),
+))
+
+idleIt.effect("idle expiry releases scoped state and recreates it without closing an active directory", () => Effect.gen(function* () {
+  const one = yield* tmpdirScoped()
+  const two = yield* tmpdirScoped()
+  const released: number[] = []
+  let count = 0
+  const state = yield* InstanceState.make(() => Effect.acquireRelease(
+    Effect.sync(() => ({ id: ++count })),
+    (resource) => Effect.sync(() => { released.push(resource.id) }),
+  ))
+  class Resource extends Context.Service<Resource, { readonly generation: number }>()("@test/LocationResource") {}
+  const closed: string[] = []
+  let generation = 0
+  const maps = yield* Effect.forEach(["system", "agent", "file"], (name) => Effect.gen(function* () {
+    const locations = yield* LayerMap.make((ref: Location.Ref) => Layer.effect(Resource, Effect.acquireRelease(
+      Effect.sync(() => ({ generation: ++generation })),
+      () => Effect.sync(() => { closed.push(`${name}:${ref.directory}`) }),
+    )), { idleTimeToLive: "60 minutes" })
+    yield* LegacyLocations.register(locations)
+    return locations
+  }))
+  const store = yield* InstanceStore.Service
+  const a = yield* access(state, one)
+  const b = yield* access(state, two)
+  const ref = (directory: string) => Location.Ref.make({ directory: AbsolutePath.make(directory) })
+  const borrow = (locations: (typeof maps)[number], directory: string) => store.provide({ directory }, Effect.gen(function* () {
+    yield* InstanceLifetime.retain(locations, locations.get(ref(directory)))
+    return yield* Resource.pipe(Effect.provide(locations.get(ref(directory))))
+  }))
+  const resources = yield* Effect.forEach(maps, (locations) => borrow(locations, one))
+  const protectedResources = yield* Effect.forEach(maps, (locations) => borrow(locations, two))
+  const started = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const active = yield* store.provide({ directory: two }, Deferred.succeed(started, undefined).pipe(
+    Effect.andThen(Deferred.await(release)),
+  )).pipe(Effect.forkScoped)
+  yield* Deferred.await(started)
+  yield* TestClock.adjust(4000)
+  expect(released).toEqual([a.id])
+  expect(closed.sort()).toEqual([`system:${one}`, `agent:${one}`, `file:${one}`].sort())
+  const recreated = yield* Effect.forEach(maps, (locations) => borrow(locations, one))
+  recreated.forEach((resource, index) => expect(resource).not.toBe(resources[index]))
+  expect(yield* access(state, two)).toBe(b)
+  expect(yield* access(state, one)).not.toBe(a)
+  yield* TestClock.adjust("61 minutes")
+  const retained = yield* Effect.forEach(maps, (locations) => borrow(locations, two))
+  retained.forEach((resource, index) => expect(resource).toBe(protectedResources[index]))
+  yield* Deferred.succeed(release, undefined)
+  yield* Fiber.join(active)
+  yield* TestClock.adjust(4000)
+  expect(released).toContain(b.id)
+}))
 
 const access = <A, E>(state: InstanceState.InstanceState<A, E>, dir: string) =>
   InstanceState.get(state).pipe(provideInstanceEffect(dir))

@@ -2,6 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer, Context, Schema, Scope } from "effect"
 import { formatPatch, structuredPatch } from "diff"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Git } from "@/git"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -337,7 +338,7 @@ const layer: Layer.Layer<Service, never, Git.Service | EventV2Bridge.Service> = 
 
     return Service.of({
       init: Effect.fn("Vcs.init")(function* () {
-        yield* InstanceState.get(state).pipe(Effect.forkIn(scope))
+        yield* InstanceLifetime.fork(InstanceState.get(state), scope)
       }),
       branch: Effect.fn("Vcs.branch")(function* () {
         return yield* InstanceState.use(state, (x) => x.current)

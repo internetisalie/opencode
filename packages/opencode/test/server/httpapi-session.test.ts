@@ -1,10 +1,18 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, spyOn } from "bun:test"
+import { SessionPrompt } from "@/session/prompt"
+import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { Cause, Config, Effect, Exit, Layer } from "effect"
+import { Cause, Config, ConfigProvider, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { TestClock } from "effect/testing"
+import { InstanceRef } from "@/effect/instance-ref"
+import { SessionRunState } from "@/session/run-state"
+import { SessionStatus } from "@/session/status"
+import { BackgroundJob } from "@/background/job"
+import { registerDisposer } from "@/effect/instance-registry"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -36,7 +44,7 @@ import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
-import { pollWithTimeout, testEffect } from "../lib/effect"
+import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 
 const originalWorkspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 const noopBootstrapLayer = Layer.succeed(
@@ -60,6 +68,99 @@ const httpApiLayer = servedRoutes.pipe(
   Layer.provideMerge(NodeServices.layer),
 )
 const it = testEffect(Layer.mergeAll(appLayer, httpApiLayer))
+const idleIt = testEffect(httpApiLayer.pipe(Layer.provide(ConfigProvider.layer(
+  ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "200" }),
+))))
+const activityIt = testEffect(LayerNode.compile(LayerNode.group([
+  InstanceStore.node, SessionRunState.node, SessionStatus.node, BackgroundJob.node, Session.node, CrossSpawnSpawner.node,
+]), [[InstanceStore.bootstrapNode, noopBootstrapLayer]]).pipe(Layer.provide(ConfigProvider.layer(
+  ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" }),
+))))
+
+const gapIt = testEffect(Layer.mergeAll(httpApiLayer, AppNodeBuilderV1.build(SessionPrompt.node)).pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ OPENCODE_INSTANCE_IDLE_TTL_MS: "2000" }))),
+))
+
+gapIt.effect("R1-L2 prompt_async reserves the gap after its 204 response", () => Effect.gen(function* () {
+  const quiet = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+  const directory = yield* tmpdirScoped({ git: true, config: { formatter: false, lsp: false } })
+  const headers = { "x-opencode-directory": directory, "content-type": "application/json" }
+  yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers: { ...headers, "x-opencode-directory": quiet }, body: JSON.stringify({ title: "quiet" }) })
+  yield* requestJson("/vcs", { headers: { ...headers, "x-opencode-directory": quiet } })
+  const chat = yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers, body: JSON.stringify({ title: "gap" }) })
+  const prompt = yield* SessionPrompt.Service
+  const entered = yield* Deferred.make<void>()
+  const release = yield* Deferred.make<void>()
+  const spy = spyOn(prompt, "prompt").mockImplementation(() => Deferred.succeed(entered, undefined).pipe(
+    Effect.andThen(Deferred.await(release)), Effect.andThen(Effect.die(new Error("gap fixture complete"))),
+  ))
+  yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()))
+  yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid))
+  const disposed: string[] = []
+  const off = registerDisposer(async (dir) => { disposed.push(dir) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  const response = yield* request(pathFor(SessionPaths.promptAsync, { sessionID: chat.id }), {
+    method: "POST", headers, body: JSON.stringify({ parts: [{ type: "text", text: "gap" }] }),
+  })
+  expect(response.status).toBe(204)
+  yield* Deferred.await(entered)
+  yield* TestClock.adjust(8000)
+  expect(disposed).not.toContain(directory)
+  expect(disposed).toContain(quiet)
+  yield* Deferred.succeed(release, undefined)
+}))
+
+activityIt.effect("runner setup, shell, retry and detached job ownership are directory local", () => Effect.gen(function* () {
+  const directory = yield* tmpdirScoped({ git: true })
+  const quiet = yield* tmpdirScoped({ git: true })
+  const store = yield* InstanceStore.Service
+  const run = yield* SessionRunState.Service
+  const status = yield* SessionStatus.Service
+  const jobs = yield* BackgroundJob.Service
+  const ctx = yield* store.load({ directory })
+  const other = yield* store.load({ directory: quiet })
+  const chat = yield* createSession({ title: "activity" }).pipe(provideInstanceEffect(directory))
+  const result = yield* createTextMessage(chat.id, "work").pipe(
+    Effect.map((message) => ({ info: message.info, parts: [message.part] })),
+    provideInstanceEffect(directory),
+  )
+  const ready = yield* Deferred.make<void>()
+  const finish = yield* Deferred.make<void>()
+  const work = Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(finish)), Effect.as(result))
+  const runner = yield* run.ensureRunning(chat.id, Effect.succeed(result), work).pipe(
+    Effect.provideService(InstanceRef, ctx), Effect.forkScoped,
+  )
+  yield* Deferred.await(ready)
+  // Runner is live before the processor has published a busy status.
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).toBe(ctx)
+  expect(yield* store.load({ directory: quiet })).not.toBe(other)
+  yield* status.set(chat.id, { type: "retry", attempt: 1, message: "waiting", next: 9999 }).pipe(Effect.provideService(InstanceRef, ctx))
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).toBe(ctx)
+  yield* Deferred.succeed(finish, undefined)
+  yield* Fiber.join(runner)
+  const shellReady = yield* Deferred.make<void>()
+  const shellFinish = yield* Deferred.make<void>()
+  const shell = yield* run.startShell(chat.id, Effect.succeed(result), Deferred.succeed(shellReady, undefined).pipe(
+    Effect.andThen(Deferred.await(shellFinish)), Effect.as(result),
+  )).pipe(Effect.provideService(InstanceRef, ctx), Effect.forkScoped)
+  yield* Deferred.await(shellReady)
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).toBe(ctx)
+  yield* Deferred.succeed(shellFinish, undefined)
+  yield* Fiber.join(shell)
+  const jobFinish = yield* Deferred.make<void>()
+  const extendedFinish = yield* Deferred.make<void>()
+  const job = yield* jobs.start({ type: "test", run: Deferred.await(jobFinish).pipe(Effect.as("first")) }).pipe(Effect.provideService(InstanceRef, ctx))
+  expect(yield* jobs.extend({ id: job.id, run: Deferred.await(extendedFinish).pipe(Effect.as("last")) }).pipe(Effect.provideService(InstanceRef, ctx))).toBe(true)
+  yield* Deferred.succeed(jobFinish, undefined)
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).toBe(ctx)
+  yield* jobs.cancel(job.id).pipe(Effect.provideService(InstanceRef, ctx))
+  yield* TestClock.adjust(4000)
+  expect(yield* store.load({ directory })).not.toBe(ctx)
+}))
 
 function pathFor(path: string, params: Record<string, string>) {
   return Object.entries(params).reduce((result, [key, value]) => result.replace(`:${key}`, value), path)
@@ -233,6 +334,80 @@ afterEach(async () => {
   await disposeAllInstances()
   await resetDatabase()
 })
+
+for (const cancel of [false, true]) idleIt.live(`prompt_async protects the resolved directory after 204 and releases on ${cancel ? "cancellation" : "completion"}`, () => Effect.gen(function* () {
+  const gate = yield* Deferred.make<void>()
+  return yield* Effect.gen(function* () {
+  const llm = yield* TestLLMServer
+  yield* llm.hold("finished", Effect.runPromise(Deferred.await(gate)))
+  const config = testProviderConfig(llm.url)
+  const directory = yield* tmpdirScoped({ git: true, config })
+  const quiet = yield* tmpdirScoped({ git: true, config })
+  const headers = { "x-opencode-directory": directory, "content-type": "application/json" }
+  const chat = yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers, body: JSON.stringify({ title: "idle leases" }) })
+  yield* Effect.addFinalizer(() => Deferred.succeed(gate, undefined).pipe(
+    Effect.andThen(request(pathFor(SessionPaths.abort, { sessionID: chat.id }), { method: "POST", headers })),
+    Effect.ignoreCause,
+  ))
+  yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers: { ...headers, "x-opencode-directory": quiet }, body: JSON.stringify({ title: "quiet" }) })
+  const disposed: string[] = []
+  const off = registerDisposer(async (dir) => { disposed.push(dir) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  const response = yield* request(`${pathFor(SessionPaths.promptAsync, { sessionID: chat.id })}?directory=${encodeURIComponent(quiet)}`, {
+    method: "POST", headers,
+    body: JSON.stringify({ agent: "build", model: { providerID: "test", modelID: "test-model" }, parts: [{ type: "text", text: "hello" }] }),
+  })
+  expect(response.status).toBe(204)
+  yield* awaitWithTimeout(llm.wait(1), "async prompt never reached the model", "10 seconds")
+  yield* pollWithTimeout(Effect.sync(() => disposed.includes(quiet) ? true : undefined), "quiet directory did not expire")
+  yield* Effect.sleep(1200)
+  expect(disposed).not.toContain(directory)
+  if (cancel) {
+    const response = yield* request(pathFor(SessionPaths.abort, { sessionID: chat.id }), { method: "POST", headers })
+    expect(response.status).toBe(200)
+  } else yield* Deferred.succeed(gate, undefined)
+  yield* pollWithTimeout(Effect.sync(() => disposed.includes(directory) ? true : undefined), "async prompt lease was not released", "10 seconds")
+  const messages = yield* requestJson<SessionV1.WithParts[]>(pathFor(SessionPaths.messages, { sessionID: chat.id }), { headers })
+  const assistant = messages.find((message) => message.info.role === "assistant")
+  expect(assistant?.info.role === "assistant" ? assistant.info.path.cwd : undefined).toBe(directory)
+  if (!cancel) expect(assistant?.parts.some((part) => part.type === "text" && part.text === "finished")).toBe(true)
+  }).pipe(
+    Effect.ensuring(Deferred.succeed(gate, undefined)),
+    Effect.provide(TestLLMServer.layer),
+  )
+}))
+
+idleIt.live("a synchronous turn survives permission and real shell execution beyond TTL", () => Effect.gen(function* () {
+  const llm = yield* TestLLMServer
+  yield* llm.tool("bash", { command: "touch lease-started; while [ ! -e lease-finish ]; do sleep 0.02; done; printf tool-done" })
+  yield* llm.text("done")
+  const directory = yield* tmpdirScoped({ git: true, config: { ...testProviderConfig(llm.url), permission: { bash: "ask" } } })
+  const headers = { "x-opencode-directory": directory, "content-type": "application/json" }
+  const chat = yield* requestJson<Session.Info>(SessionPaths.create, { method: "POST", headers, body: JSON.stringify({ title: "permission and shell" }) })
+  const disposed: string[] = []
+  const off = registerDisposer(async (dir) => { disposed.push(dir) })
+  yield* Effect.addFinalizer(() => Effect.sync(off))
+  yield* Effect.addFinalizer(() => Effect.promise(() => Bun.write(path.join(directory, "lease-finish"), "done")).pipe(Effect.asVoid))
+  const prompt = yield* request(pathFor(SessionPaths.prompt, { sessionID: chat.id }), {
+    method: "POST", headers,
+    body: JSON.stringify({ agent: "build", model: { providerID: "test", modelID: "test-model" }, parts: [{ type: "text", text: "run the tool" }] }),
+  }).pipe(Effect.forkScoped)
+  const permission = yield* pollWithTimeout(requestJson<PermissionV1.Request[]>("/permission", { headers }).pipe(
+    Effect.map((requests) => requests.find((request) => request.sessionID === chat.id)),
+  ), "shell permission was not requested", "10 seconds")
+  yield* Effect.sleep(2200)
+  expect(disposed).not.toContain(directory)
+  expect((yield* request(`/permission/${permission.id}/reply`, { method: "POST", headers, body: JSON.stringify({ reply: "once" }) })).status).toBe(200)
+  yield* pollWithTimeout(Effect.promise(() => Bun.file(path.join(directory, "lease-started")).exists()).pipe(
+    Effect.map((exists) => exists ? true : undefined),
+  ), "shell never became ready")
+  yield* Effect.sleep(2200)
+  expect(disposed).not.toContain(directory)
+  yield* Effect.promise(() => Bun.write(path.join(directory, "lease-finish"), "done"))
+  const result = yield* awaitWithTimeout(Fiber.join(prompt).pipe(Effect.flatMap(json<SessionV1.WithParts>)), "shell turn did not finish", "10 seconds")
+  expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+  yield* pollWithTimeout(Effect.sync(() => disposed.includes(directory) ? true : undefined), "completed tool turn did not expire")
+}).pipe(Effect.provide(TestLLMServer.layer)))
 
 describe("session HttpApi", () => {
   it.effect("maps busy sessions to public session busy errors", () =>

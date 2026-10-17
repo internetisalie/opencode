@@ -1,5 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -27,6 +28,11 @@ const layer = Layer.effect(
       Effect.fn("SessionStatus.state")(() => Effect.succeed(new Map<SessionID, Info>())),
     )
 
+    yield* InstanceLifetime.registerCheck(Effect.gen(function* () {
+      if (!(yield* InstanceState.has(state))) return false
+      return (yield* InstanceState.get(state)).size > 0
+    }))
+
     const get = Effect.fn("SessionStatus.get")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
       return data.get(sessionID) ?? { type: "idle" as const }
@@ -45,7 +51,7 @@ const layer = Layer.effect(
         return
       }
       data.set(sessionID, status)
-    })
+    }, (effect) => InstanceLifetime.hold(effect, "session"))
 
     return Service.of({ get, list, set })
   }),

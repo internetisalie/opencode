@@ -117,7 +117,9 @@ function errorText(error: unknown) {
  * separate durable ownership slice rather than pretending this registry has
  * those semantics.
  */
-export const make = Effect.gen(function* () {
+// Reserve ownership before each job/extension is forked and release it only
+// after execution finalizers and registry settlement have finished.
+export const makeWith = (acquire: Effect.Effect<Effect.Effect<void>>) => Effect.gen(function* () {
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map()),
     scope: yield* Scope.Scope,
@@ -177,12 +179,14 @@ export const make = Effect.gen(function* () {
     sequence: number,
     run: Effect.Effect<string, unknown>,
   ) {
+    const release = yield* acquire
     return yield* run.pipe(
       Effect.matchCauseEffect({
         onSuccess: (output) => settle(id, token, sequence, Exit.succeed(output)),
         onFailure: (cause) => settle(id, token, sequence, Exit.failCause(cause)),
       }),
       Effect.asVoid,
+      Effect.ensuring(release),
       Effect.forkIn(scope, { startImmediately: true }),
     )
   })
@@ -359,6 +363,8 @@ export const make = Effect.gen(function* () {
 
   return Service.of({ list, get, start, extend, wait, waitForPromotion, promote, cancel })
 })
+
+export const make = makeWith(Effect.succeed(Effect.void))
 
 const layer = Layer.effect(Service, make)
 
