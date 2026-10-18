@@ -139,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: opencode-fork-server-linux-amd64
-          path: packages/cli/dist/opencode-linux-x64-baseline-musl
+          path: packages/cli/dist/cli-linux-x64-baseline-musl
           if-no-files-found: error
           retention-days: 1
 
@@ -168,7 +168,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: opencode-fork-server-linux-amd64
-          path: packages/cli/dist/opencode-linux-x64-baseline-musl
+          path: packages/cli/dist/cli-linux-x64-baseline-musl
 
       - name: Set image tags
         id: image

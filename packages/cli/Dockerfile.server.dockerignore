@@ -1,5 +1,5 @@
 *
 !dist/
-!dist/opencode-linux-x64-baseline-musl/
-!dist/opencode-linux-x64-baseline-musl/bin/
-!dist/opencode-linux-x64-baseline-musl/bin/opencode
+!dist/cli-linux-x64-baseline-musl/
+!dist/cli-linux-x64-baseline-musl/bin/
+!dist/cli-linux-x64-baseline-musl/bin/opencode
