@@ -3,9 +3,9 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { InvalidRequestError, ProjectNotFoundError } from "@opencode/protocol/errors"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Effect, RcMap } from "effect"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpApiBuilder } from "effect/http-api"
 import { isAbsolute } from "node:path"
-import { Api } from "../api"
+import { Api } from "../api.js"
 
 export const ProjectHandler = HttpApiBuilder.group(Api, "server.project", (handlers) =>
   Effect.gen(function* () {
@@ -22,7 +22,7 @@ export const ProjectHandler = HttpApiBuilder.group(Api, "server.project", (handl
     })
 
     return handlers
-      .handle("project.list", () => project.list())
+      .handle("project.list", (ctx) => project.list(ctx.query))
       .handle("project.update", (ctx) =>
         project
           .update({ ...ctx.payload, projectID: ctx.params.projectID })

@@ -3,7 +3,7 @@ import { Session } from "@opencode/schema/session"
 import { ConflictError } from "@opencode/protocol/errors"
 import { SessionOwnership } from "@opencode/protocol/middleware/session-ownership"
 import { Effect, Layer, Option, Schema } from "effect"
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http"
+import { HttpRouter, HttpServerRequest } from "effect/http"
 
 const decodeSessionID = Schema.decodeUnknownOption(Session.ID)
 

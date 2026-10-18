@@ -104,6 +104,7 @@ describe("node build", () => {
           associate: () => Effect.die("not implemented"),
           dissociate: () => Effect.die("not implemented"),
           activate: () => Effect.void,
+          sweep: () => Effect.void,
           resolve: (directory) => Effect.succeed({ id: Project.ID.global, directory, canonical: directory }),
         })
       }),

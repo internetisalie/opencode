@@ -1,7 +1,7 @@
 import { SessionStore } from "@opencode/core/session/store"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option, Schema, Scope } from "effect"
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import type { ServerOptions } from "../options"
 import { ServerAuth } from "../auth"
 import { authorizedRequest, unauthorizedResponse } from "./authorization"

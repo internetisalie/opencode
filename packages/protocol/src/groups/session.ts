@@ -5,19 +5,13 @@ import { Session } from "@opencode/schema/session"
 import { SessionStats } from "@opencode/schema/session-stats"
 import { InstructionEntry } from "@opencode/schema/instruction-entry"
 import { Project } from "@opencode/schema/project"
-import {
-  AbsolutePath,
-  DateTimeUtcFromMillis,
-  NonNegativeInt,
-  PositiveInt,
-  RelativePath,
-  statics,
-} from "@opencode/schema/schema"
+import { DateTimeUtcFromMillis, NonNegativeInt, PositiveInt } from "@opencode/schema/schema"
 import { Event } from "@opencode/schema/event"
-import { Context, Effect, Encoding, Result, Schema, SchemaGetter, Struct } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
+import { Context, Schema, SchemaGetter, Struct } from "effect"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/http-api"
 import {
   ConflictError,
+  LocationNotFoundError,
   CommandExecutionError,
   CommandNotFoundError,
   FormAlreadySettledError,
@@ -43,76 +37,6 @@ import { FileDiff } from "@opencode/schema/file-diff"
 import { Form } from "@opencode/schema/form"
 import { PublicSessionMessage } from "./message.js"
 import { SessionOwnership } from "../middleware/session-ownership.js"
-
-const ParentIDFilter = Schema.Union([
-  Session.ID,
-  Schema.Null.pipe(
-    Schema.encodeTo(Schema.Literal("null"), {
-      decode: SchemaGetter.transform(() => null),
-      encode: SchemaGetter.transform(() => "null" as const),
-    }),
-  ),
-]).annotate({
-  description: "Filter by parent session. Use null to return only root sessions.",
-})
-
-const SessionsQueryFields = {
-  limit: Schema.NumberFromString.pipe(Schema.decodeTo(PositiveInt), Schema.optional).annotate({
-    description: "Maximum number of sessions to return. Defaults to the newest 50 sessions.",
-  }),
-  order: Schema.optional(Schema.Union([Schema.Literal("asc"), Schema.Literal("desc")])).annotate({
-    description: "Session order for the first page. Use desc for newest first or asc for oldest first.",
-  }),
-  search: Schema.optional(Schema.String),
-  parentID: ParentIDFilter.pipe(Schema.optional),
-}
-
-const SessionsDirectoryQuery = Schema.Struct({
-  ...SessionsQueryFields,
-  directory: AbsolutePath,
-})
-
-const SessionsProjectQuery = Schema.Struct({
-  ...SessionsQueryFields,
-  project: Project.ID,
-  subpath: RelativePath.pipe(Schema.optional),
-})
-
-const SessionsAllQuery = Schema.Struct(SessionsQueryFields)
-
-const withCursor = <Fields extends Schema.Struct.Fields>(schema: Schema.Struct<Fields>) =>
-  schema.mapFields((fields) => ({
-    ...Struct.omit(fields, ["limit"]),
-    anchor: Session.ListAnchor,
-  }))
-
-const SessionsCursorInput = Schema.Union([
-  withCursor(SessionsDirectoryQuery),
-  withCursor(SessionsProjectQuery),
-  withCursor(SessionsAllQuery),
-])
-const SessionsCursorJson = Schema.fromJsonString(SessionsCursorInput)
-const encodeSessionsCursor = Schema.encodeSync(SessionsCursorJson)
-const decodeSessionsCursor = Schema.decodeUnknownEffect(SessionsCursorJson)
-const invalidCursor = "Invalid cursor" as const
-
-export const SessionsCursor = Schema.String.pipe(
-  Schema.brand("SessionsCursor"),
-  statics((schema) => {
-    const make = schema.make.bind(schema)
-    return {
-      make: (input: typeof SessionsCursorInput.Type) => make(Encoding.encodeBase64Url(encodeSessionsCursor(input))),
-      parse: (input: string) =>
-        Effect.suspend(() => {
-          const result = Encoding.decodeBase64UrlString(input)
-          return Result.isFailure(result)
-            ? Effect.fail(invalidCursor)
-            : decodeSessionsCursor(result.success).pipe(Effect.mapError(() => invalidCursor))
-        }),
-    }
-  }),
-)
-export type SessionsCursor = typeof SessionsCursor.Type
 
 const SessionActive = Schema.Struct({
   type: Schema.Literal("running"),
@@ -159,16 +83,16 @@ const BooleanFromString = Schema.Literals(["true", "false"]).pipe(
   }),
 )
 
-const SessionsQueryCursor = SessionsCursor.annotate({
-  description: "Opaque pagination cursor returned as cursor.previous or cursor.next in the previous response.",
-})
+// Kept so existing imports of SessionsCursor from Protocol keep working.
+export const SessionsCursor = Session.ListCursor
+export type SessionsCursor = Session.ListCursor
 
 export const SessionsQuery = Schema.Struct({
-  ...SessionsQueryFields,
-  directory: AbsolutePath.pipe(Schema.optional),
-  project: Project.ID.pipe(Schema.optional),
-  subpath: RelativePath.pipe(Schema.optional),
-  cursor: SessionsQueryCursor.pipe(Schema.optional),
+  limit: Schema.NumberFromString.pipe(Schema.decodeTo(PositiveInt), Schema.optional).annotate({
+    description: "Maximum number of sessions to return. Defaults to the newest 50 sessions.",
+  }),
+  ...Session.ListFilter.fields,
+  cursor: Session.ListCursor.pipe(Schema.optional),
 }).annotate({ identifier: "SessionsQuery" })
 
 export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI extends HttpApiMiddleware.AnyId, FormS>(
@@ -182,8 +106,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         success: Schema.Struct({
           data: Schema.Array(PublicSessionInfo),
           cursor: Schema.Struct({
-            previous: SessionsCursor.pipe(Schema.optional),
-            next: SessionsCursor.pipe(Schema.optional),
+            previous: Session.ListCursor.pipe(Schema.optional),
+            next: Session.ListCursor.pipe(Schema.optional),
           }),
         }).annotate({ identifier: "SessionsResponse" }),
         error: [InvalidCursorError, InvalidRequestError],
@@ -219,6 +143,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       HttpApiEndpoint.post("session.create", "/api/session", {
         payload: Schema.Struct({
           id: Session.ID.pipe(Schema.optional),
+          parentID: Session.ID.pipe(Schema.optional),
           title: Schema.String.pipe(Schema.optional),
           agent: Agent.ID.pipe(Schema.optional),
           model: Model.Ref.pipe(Schema.optional),
@@ -227,11 +152,13 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           permissions: Permission.Ruleset.pipe(Schema.optional),
         }),
         success: Schema.Struct({ data: PublicSessionInfo }),
+        error: SessionNotFoundError,
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.create",
           summary: "Create session",
-          description: "Create a session at the requested location.",
+          description:
+            "Create a session at the requested location. A parentID creates a linked child session at its parent's location.",
         }),
       ),
     )
@@ -606,7 +533,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           }),
         }),
         success: Schema.Struct({ data: Schema.Array(FileDiff.Info) }),
-        error: [InvalidRequestError, MessageNotFoundError, SessionNotFoundError, UnknownError],
+        error: [InvalidRequestError, MessageNotFoundError, SessionNotFoundError, UnknownError, LocationNotFoundError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.diff",
@@ -870,6 +797,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
     .add(
       HttpApiEndpoint.delete("session.form.cancel", "/api/session/:sessionID/form/:formID", {
         params: { sessionID: Schema.String, formID: Form.ID },
+        query: Schema.Struct({ message: Schema.optional(Schema.String) }),
         success: HttpApiSchema.NoContent,
         error: [SessionNotFoundError, FormAlreadySettledError, FormNotFoundError],
       })
@@ -878,7 +806,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           OpenApi.annotations({
             identifier: "session.form.cancel",
             summary: "Cancel form",
-            description: "Cancel a pending form.",
+            description: "Cancel a pending form, optionally telling the asker why it was not answered.",
           }),
         ),
     )
