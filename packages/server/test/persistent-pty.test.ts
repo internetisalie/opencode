@@ -478,6 +478,13 @@ smoke(
       )
       expect(handoff.directory).toBe(directory)
       yield* Scope.close(migratedScope, Exit.void)
+      const registration = Schema.decodeUnknownSync(Schema.Struct({ pid: Schema.Number }))(
+        yield* Effect.promise(() => Bun.file(path.join(directory, "service.json")).json()),
+      )
+      // Purging the registration prevents the successor from owning this daemon.
+      // Keep fixture ownership so both success and assertion failure clean it up.
+      const orphanScope = yield* Scope.fork(scope)
+      yield* Scope.addFinalizer(orphanScope, Effect.sync(() => process.kill(registration.pid, "SIGTERM")))
       // Simulate macOS purging the registration while the daemon waits for its successor.
       yield* Effect.promise(() => fs.rm(path.join(directory, "service.json")))
 
@@ -494,6 +501,9 @@ smoke(
         })).data,
       )
       expect(yield* waitForText(freshBase, second.id, "after-restart")).toContain("after-restart")
+      yield* Scope.close(orphanScope, Exit.void)
+      yield* waitForExit(registration.pid)
+      yield* waitForExit(first.pid)
     }),
   30_000,
 )
