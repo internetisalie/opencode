@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "d6336e89-2422-4e6d-9afc-b1ef89fc4ac7",
+  "id": "5067fae0-90ff-4601-82d7-dd050ea9dc8f",
   "prevIds": ["e98619ef-c334-45e3-8c48-9932ed1ef290"],
   "ddl": [
     {
@@ -751,6 +751,16 @@
       "default": "0",
       "generated": null,
       "name": "time_active",
+      "entityType": "columns",
+      "table": "project"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_archived",
       "entityType": "columns",
       "table": "project"
     },

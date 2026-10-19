@@ -37,6 +37,8 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - uses: ./.github/actions/setup-bun
+        with:
+          install-flags: --os="*" --cpu="*"
 
       - name: Typecheck changed server packages sequentially
         run: |
@@ -47,8 +49,8 @@ jobs:
       - name: Test project and session core
         working-directory: packages/core
         run: |
-          bun test test/project.test.ts
-          bun test test/session-owned.test.ts
+          bun run script/test.ts test/project.test.ts
+          bun run script/test.ts test/session-owned.test.ts
 
       - name: Test plugin host
         working-directory: packages/plugin
@@ -72,7 +74,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/.agent-scratch"
           suite=$(mktemp -d "$GITHUB_WORKSPACE/.agent-scratch/XXXXXX")
-          native="$GITHUB_WORKSPACE/node_modules/.bun/@opencode-ai+pty-linux-x64-gnu@0.1.13/node_modules/@opencode-ai/pty-linux-x64-gnu/bin/opencode-pty"
+          native="$(cd packages/server && bun -e 'console.log(require("@opencode-ai/pty").binaryPath)')"
           cleanup() {
             result=$?
             trap - EXIT
@@ -112,7 +114,7 @@ jobs:
           mkdir -p "$suite"/{d,c,f,s,r,t,h,o}
           trap cleanup EXIT
           test -x "$native"
-          test "$(sha256sum "$native")" = "b8caf78cbed9610aa5b744264aade552ed57cac70b2ebc27a788a0b1d2e02caa  $native"
+          test "$(sha256sum "$native")" = "a02e0cf5a03cf78364ba903d16cfd64b37178128839393f0e84b967f9caeeb84  $native"
           cd "$GITHUB_WORKSPACE/packages/server"
           timeout --signal=TERM --kill-after=5s 180s bun test test/persistent-pty.test.ts test/passive-pty-observation.test.ts
 

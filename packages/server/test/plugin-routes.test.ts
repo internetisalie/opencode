@@ -91,6 +91,24 @@ it.live("authenticates before activating location plugins and forwards HTTP requ
     expect(denied.status).toBe(401)
     expect(activations).toEqual([])
 
+    const missing = `${location.path}/missing`
+    const unavailable = yield* Effect.promise(() =>
+      handler(
+        new Request(route, {
+          headers: {
+            authorization: `Basic ${btoa("opencode:secret")}`,
+            "x-opencode-directory": missing,
+          },
+        }),
+      ),
+    )
+    expect(unavailable.status).toBe(404)
+    expect(yield* Effect.promise(() => unavailable.json())).toMatchObject({
+      _tag: "LocationNotFoundError",
+      location: { directory: missing },
+    })
+    expect(activations).toEqual([])
+
     const response = yield* Effect.promise(() =>
       handler(
         new Request(route, {

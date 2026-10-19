@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { Info, ReadResult, Snapshot } from "@opencode/schema/persistent-pty"
 import type { PersistentPty } from "@opencode/schema/persistent-pty"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
-import { HttpServer } from "effect/unstable/http"
+import { HttpServer } from "effect/http"
 import { ServerProcess } from "../../src/process"
 
 export interface FixtureOptions {

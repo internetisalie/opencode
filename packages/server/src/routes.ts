@@ -34,8 +34,8 @@ import { SdkPlugins } from "@opencode/core/plugin/sdk"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Workspace } from "@opencode/core/workspace"
 import { Watcher } from "@opencode/core/filesystem/watcher"
-import { HttpRouter } from "effect/unstable/http"
-import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { HttpRouter } from "effect/http"
+import { HttpApiBuilder } from "effect/http-api"
 import { Context, Effect, Layer, Option } from "effect"
 import { Api } from "./api"
 import { ServerAuth } from "./auth"
@@ -52,6 +52,7 @@ import { sessionOwnershipLayer } from "./middleware/session-ownership"
 import { ServerInfo } from "./server-info"
 import { pluginRoutes } from "./plugin-routes"
 import type { ServerOptions } from "./options"
+import { RemoteEventConfig } from "./remote-events"
 
 const applicationServiceNodes = [
   Global.node,
@@ -62,6 +63,7 @@ const applicationServiceNodes = [
   Job.node,
   FSUtil.node,
   Project.node,
+  Project.sweepNode,
   Worktree.node,
   Session.node,
   SessionStore.node,
@@ -139,6 +141,7 @@ function makeRoutes<AuthError, AuthServices>(
     Config.node.replace(
       Config.configured({
         project: options.config?.project,
+        claude: options.config?.claude,
         file: options.config?.file,
         content: options.config?.content,
       }),
@@ -148,7 +151,7 @@ function makeRoutes<AuthError, AuthServices>(
     Mcp.node.replace(
       Mcp.configured({
         clientInfo: {
-          name: options.app?.name ?? "opencode",
+          name: "opencode",
           version: options.app?.version ?? "unknown",
         },
       }),
@@ -189,7 +192,13 @@ function makeRoutes<AuthError, AuthServices>(
         ServerInfo.layer(serviceURLs, Context.get(context, Global.Service).tmp, options.app),
       )
       const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-        Layer.provide(handlers.pipe(Layer.provide(services), Layer.provide(Layer.succeed(CorsConfig, options)))),
+        Layer.provide(
+          handlers.pipe(
+            Layer.provide(services),
+            Layer.provide(Layer.succeed(CorsConfig, options)),
+            Layer.provide(Layer.succeed(RemoteEventConfig, options.remoteProxy)),
+          ),
+        ),
         Layer.provide(formLocationLayer),
         Layer.provide(sessionLocationLayer),
         Layer.provide(sessionOwnershipLayer),

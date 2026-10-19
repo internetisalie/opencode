@@ -14,7 +14,7 @@ if (!source) {
   test.skip("PTY plugin host integration (set PTY_PLUGIN_PATH)", () => {})
 } else {
   const it = testEffect(PluginTestLayer)
-  it.live("registers the PTY package's five native tools through the v2 host", () =>
+  it.live("registers the PTY package's six native tools through the v2 host", () =>
     Effect.gen(function* () {
       const module = yield* Effect.promise(() => import(pathToFileURL(source).href))
       const plugins = yield* Plugin.Service
@@ -26,6 +26,7 @@ if (!source) {
         "pty_list",
         "pty_read",
         "pty_spawn",
+        "pty_watch",
         "pty_write",
       ])
     }),

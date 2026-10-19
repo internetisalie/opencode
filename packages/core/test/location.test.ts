@@ -18,6 +18,7 @@ const projectLayer = Layer.succeed(
     associate: () => Effect.die("not implemented"),
     dissociate: () => Effect.die("not implemented"),
     activate: () => Effect.void,
+    sweep: () => Effect.void,
     resolve: () =>
       Effect.succeed({
         id: Project.ID.make("project"),

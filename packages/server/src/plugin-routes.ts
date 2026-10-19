@@ -2,7 +2,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHttp } from "@opencode/core/plugin/http"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Context, Effect, Option } from "effect"
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { IncomingMessage } from "node:http"
 import { Readable } from "node:stream"
 import { ServerAuth } from "./auth"
@@ -63,7 +63,22 @@ export function pluginRoutes(
             return result
           })
           return HttpServerResponse.fromWeb(response)
-        }).pipe(Effect.provide(locations.get(requestRef(request))), Effect.scoped)
+        }).pipe(
+          Effect.provide(locations.get(requestRef(request))),
+          Effect.catchTag("FileSystem.DirectoryNotFoundError", (error) =>
+            Effect.succeed(
+              HttpServerResponse.jsonUnsafe(
+                {
+                  _tag: "LocationNotFoundError",
+                  location: { directory: error.directory },
+                  message: `Location not found: ${error.directory}`,
+                },
+                { status: 404 },
+              ),
+            ),
+          ),
+          Effect.scoped,
+        )
       }),
     ),
   )

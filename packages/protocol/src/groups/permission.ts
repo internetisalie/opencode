@@ -5,8 +5,8 @@ import { PermissionSaved } from "@opencode/schema/permission-saved"
 import { Project } from "@opencode/schema/project"
 import { Session } from "@opencode/schema/session"
 import { Context, Schema } from "effect"
-import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
-import { PermissionNotFoundError, SessionNotFoundError } from "../errors.js"
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema, OpenApi } from "effect/http-api"
+import { LocationNotFoundError, PermissionNotFoundError, SessionNotFoundError } from "../errors.js"
 import { LocationQuery, locationQueryOpenApi } from "./location.js"
 import { SessionOwnership } from "../middleware/session-ownership.js"
 
@@ -90,7 +90,7 @@ export const makePermissionGroup = <
       HttpApiEndpoint.get("session.permission.list", "/api/session/:sessionID/permission", {
         params: { sessionID: Session.ID },
         success: Schema.Struct({ data: Schema.Array(Permission.Request) }),
-        error: SessionNotFoundError,
+        error: [SessionNotFoundError, LocationNotFoundError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.permission.list",
