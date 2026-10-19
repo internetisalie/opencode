@@ -321,7 +321,7 @@ jobs:
   e2e:
     name: e2e (${{ matrix.os }})
     needs: [affected, e2e-suite]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.repository != 'internetisalie/opencode' }}
     strategy:
       fail-fast: false
       matrix:
