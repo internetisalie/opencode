@@ -679,6 +679,45 @@ export function trimDiff(diff: string): string {
   return trimmedLines.join("\n")
 }
 
+// A tool result is stored whole and streamed to every client, so the diff of a huge file must not ride in it.
+export const MAX_DIFF_CHARS = 128 * 1024
+
+// The header of a unified diff with no hunks: a valid patch that names the file and shows no content.
+export function patchHeader(filePath: string): string {
+  return `Index: ${filePath}\n${"=".repeat(67)}\n--- ${filePath}\n+++ ${filePath}\n`
+}
+
+// Cuts a unified diff after at most `limit` characters at a line boundary and rewrites the last hunk header
+// to the lines that remain, so the result is still a diff every consumer can parse. The diff may be several
+// files joined: whatever follows the last hunk's own lines (the next file's header) is dropped, never counted.
+export function cutPatch(diff: string, limit: number): string {
+  if (diff.length <= limit) return diff
+  const lines = diff.split("\n")
+  let size = 0
+  let end = 0
+  while (end < lines.length && size + lines[end].length + 1 <= limit) size += lines[end++].length + 1
+  const kept = lines.slice(0, end)
+  const hunk = kept.findLastIndex((line) => line.startsWith("@@ "))
+  if (hunk < 0) return `${kept.join("\n")}\n`
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(kept[hunk])
+  if (!match) return `${kept.slice(0, hunk).join("\n")}\n`
+  let stop = hunk + 1
+  while (stop < kept.length && /^[ +\-\\]/.test(kept[stop])) stop++
+  const body = kept.slice(hunk + 1, stop)
+  const before = body.filter((line) => line[0] === " " || line[0] === "-").length
+  const after = body.filter((line) => line[0] === " " || line[0] === "+").length
+  // An empty range is written one line earlier than a range of lines starting there.
+  const start = (value: string, original: string | undefined, count: number) =>
+    count === 0 && (original === undefined || Number(original) > 0) ? Math.max(Number(value) - 1, 0) : Number(value)
+  kept[hunk] = `@@ -${start(match[1], match[2], before)},${before} +${start(match[3], match[4], after)},${after} @@${match[5]}`
+  return `${kept.slice(0, stop).join("\n")}\n`
+}
+
+export function boundedPatch(filePath: string, before: string, after: string): string {
+  if (Math.max(before.length, after.length) > MAX_DIFF_CHARS * 4) return patchHeader(filePath)
+  return cutPatch(trimDiff(createTwoFilesPatch(filePath, filePath, before, after)), MAX_DIFF_CHARS)
+}
+
 export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
   if (oldString === newString) {
     throw new Error("No changes to apply: oldString and newString are identical.")

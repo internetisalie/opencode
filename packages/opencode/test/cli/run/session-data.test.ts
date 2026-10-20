@@ -282,6 +282,47 @@ describe("run session data", () => {
     })
   })
 
+  test.each([
+    ["exit=0", "hello\n", "bash"],
+    ["exit=3", "hello\n", "bash"],
+    ["User aborted the command", "partial\n", "bash"],
+    ["exit=0", "before\n\n<shell_metadata>\ncommand-owned\n</shell_metadata>\n", "bash"],
+    ["exit=0", "hello\n", "batch"],
+  ])("presents %s after %j for %s without changing the stored output", (note, stdout, name) => {
+    const output = stdout + `\n\n<shell_metadata>\n${note}\n</shell_metadata>`
+    const event = tool({
+      id: "tool-1",
+      messageID: "msg-1",
+      tool: name,
+      state: { status: "completed", input: {}, output, time: { start: 1, end: 2 } },
+    })
+    const out = reduce(createSessionData(), event)
+    const progress = out.commits.find((commit) => commit.phase === "progress")
+    expect(progress?.text).toBe(name === "bash" ? stdout : output)
+    expect(progress?.kind === "tool" && Object.is(progress.part, event.properties.part)).toBe(true)
+    expect(event.properties.part.state.output).toBe(output)
+  })
+
+  test.each(["echoed\n", "echoed"])("strips stdout-only bash echo %j when the result has exit metadata", (echo) => {
+    let data = reduce(createSessionData(), assistant("msg-1")).data
+    data = reduce(
+      data,
+      tool({
+        id: "tool-1",
+        messageID: "msg-1",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: {},
+          output: "echoed\n\n\n<shell_metadata>\nexit=0\n</shell_metadata>",
+          time: { start: 1, end: 2 },
+        },
+      }),
+    ).data
+    const out = reduce(data, text({ id: "txt-1", messageID: "msg-1", text: echo + "\nanswer" }))
+    expect(out.commits).toEqual([expect.objectContaining({ kind: "assistant", text: "answer" })])
+  })
+
   test("strips bash echo only from the first assistant flush", () => {
     let data = createSessionData()
     data = reduce(data, assistant("msg-1")).data

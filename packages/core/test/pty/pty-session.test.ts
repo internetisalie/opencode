@@ -1,4 +1,7 @@
 import { describe, expect } from "bun:test"
+import { existsSync } from "node:fs"
+import { readdir, readlink } from "node:fs/promises"
+import { spawn } from "#pty"
 import { Cause, Deferred, Effect, Exit, Layer, Queue } from "effect"
 import { Config } from "@opencode-ai/core/config"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -25,6 +28,43 @@ const it = testEffect(
   ]),
 )
 const ptyTest = process.platform === "win32" ? it.live.skip : it.live
+const procTest = existsSync("/proc/self/fd") && existsSync("/proc/self/task") ? ptyTest : it.live.skip
+
+const ptyDescriptors = () =>
+  Effect.promise(async () => {
+    const targets = await Promise.all(
+      (await readdir("/proc/self/fd")).map((fd) =>
+        readlink(`/proc/self/fd/${fd}`).catch((error: NodeJS.ErrnoException) => {
+          // The directory descriptor from readdir can disappear before readlink.
+          if (error.code === "ENOENT") return ""
+          throw error
+        }),
+      ),
+    )
+    return targets.filter((target) => target === "/dev/ptmx" || target.startsWith("/dev/pts/")).length
+  })
+
+const waitForPtyDescriptors = (baseline: number) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const count = yield* ptyDescriptors()
+      if (count <= baseline) return count
+      yield* Effect.sleep("10 millis")
+    }
+    return yield* ptyDescriptors()
+  })
+
+const threadCount = () => Effect.promise(async () => (await readdir("/proc/self/task")).length)
+
+const waitForThreads = (baseline: number) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const count = yield* threadCount()
+      if (count <= baseline) return count
+      yield* Effect.sleep("10 millis")
+    }
+    return yield* threadCount()
+  })
 
 const subscribePtyEvents = Effect.fn("PtySessionTest.subscribePtyEvents")(function* () {
   const source = yield* EventV2.Service
@@ -125,6 +165,68 @@ describe("pty", () => {
       expect(yield* waitForEvents(events, info.id, 1)).toEqual(["deleted"])
       const missing = yield* pty.get(info.id).pipe(Effect.exit)
       expect(Exit.isFailure(missing)).toBe(true)
+    }),
+  )
+
+  procTest("releases native PTY descriptors while retaining an exited session", () =>
+    Effect.gen(function* () {
+      const pty = yield* Pty.Service
+      const events = yield* subscribePtyEvents()
+      const baseline = yield* ptyDescriptors()
+      const threads = yield* threadCount()
+      const info = yield* createPty("/usr/bin/env", ["sh", "-c", "exit 3"])
+
+      expect(yield* waitForEvents(events, info.id, 2)).toEqual(["created", "exited"])
+      expect(yield* pty.get(info.id)).toMatchObject({ status: "exited", exitCode: 3 })
+      // Check before removal: the service deliberately retains exited sessions.
+      expect(yield* waitForThreads(threads)).toBeLessThanOrEqual(threads)
+      expect(yield* waitForPtyDescriptors(baseline)).toBeLessThanOrEqual(baseline)
+    }),
+  )
+
+  procTest("keeps a running PTY usable when another exits and supports kill after exit", () =>
+    Effect.gen(function* () {
+      const baseline = yield* ptyDescriptors()
+      const opts = { name: "xterm-256color", cwd: process.cwd(), env: { ...process.env, TERM: "xterm-256color" } }
+      const running = yield* Effect.acquireRelease(
+        Effect.sync(() => spawn("/usr/bin/env", ["cat"], opts)),
+        (proc) => Effect.sync(() => proc.kill()),
+      )
+      const output = yield* Queue.unbounded<string>()
+      const killed = yield* Deferred.make<{ exitCode: number; signal?: number | string }>()
+      const dataListener = running.onData((chunk) => Queue.offerUnsafe(output, chunk))
+      const killListener = running.onExit((event) => Deferred.doneUnsafe(killed, Effect.succeed(event)))
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          dataListener.dispose()
+          killListener.dispose()
+        }),
+      )
+      // Include the running PTY's threads; only the short-lived PTY must leave no increase.
+      const threads = yield* threadCount()
+      const short = yield* Effect.acquireRelease(
+        Effect.sync(() => spawn("/usr/bin/env", ["sh", "-c", "exit 7"], opts)),
+        (proc) => Effect.sync(() => proc.kill()),
+      )
+      const exited = yield* Deferred.make<{ exitCode: number }>()
+      const exits: number[] = []
+      const exitListener = short.onExit((event) => {
+        exits.push(event.exitCode)
+        Deferred.doneUnsafe(exited, Effect.succeed(event))
+      })
+      yield* Effect.addFinalizer(() => Effect.sync(() => exitListener.dispose()))
+
+      expect(yield* Deferred.await(exited).pipe(Effect.timeout("5 seconds"))).toMatchObject({ exitCode: 7 })
+      expect(yield* waitForThreads(threads)).toBeLessThanOrEqual(threads)
+      expect(() => short.kill()).not.toThrow()
+      expect(exits).toEqual([7])
+
+      running.write("STILL_RUNNING\n")
+      expect(yield* waitForOutput(output, "STILL_RUNNING")).toContain("STILL_RUNNING")
+      expect(yield* Deferred.isDone(killed)).toBe(false)
+      expect(() => running.kill()).not.toThrow()
+      expect(yield* Deferred.await(killed).pipe(Effect.timeout("5 seconds"))).toMatchObject({ signal: "SIGTERM" })
+      expect(yield* waitForPtyDescriptors(baseline)).toBeLessThanOrEqual(baseline)
     }),
   )
 

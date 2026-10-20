@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parsePluginSpecifier } from "../../src/plugin/shared"
+import { checkPluginCompatibility, parsePluginSpecifier } from "../../src/plugin/shared"
 
 describe("parsePluginSpecifier", () => {
   test("parses standard npm package without version", () => {
@@ -84,5 +84,30 @@ describe("parsePluginSpecifier", () => {
       pkg: "@opencode/acme",
       version: "latest",
     })
+  })
+})
+
+describe("checkPluginCompatibility", () => {
+  const pkg = (range: string) => ({ json: { engines: { opencode: range } } }) as never
+
+  test("accepts a prerelease build of a version the range names", async () => {
+    await expect(checkPluginCompatibility("x", "1.18.32-internetisalie.2", pkg(">=1.18.31"))).resolves.toBeUndefined()
+    await expect(checkPluginCompatibility("x", "1.18.32-internetisalie.2", pkg(">=1.18.32"))).resolves.toBeUndefined()
+  })
+
+  test("still rejects a build older than the range", async () => {
+    await expect(checkPluginCompatibility("x", "1.18.30-internetisalie.1", pkg(">=1.18.31"))).rejects.toThrow(
+      "Plugin requires opencode >=1.18.31 but running 1.18.30-internetisalie.1",
+    )
+  })
+
+  test("checks the build's base version, so a prerelease inside the range is not ordered against its tag", async () => {
+    await expect(
+      checkPluginCompatibility("x", "1.18.32-internetisalie.2", pkg(">=1.18.32-internetisalie.3")),
+    ).resolves.toBeUndefined()
+  })
+
+  test("accepts a plain release", async () => {
+    await expect(checkPluginCompatibility("x", "1.18.32", pkg(">=1.18.31"))).resolves.toBeUndefined()
   })
 })

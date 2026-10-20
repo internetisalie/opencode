@@ -181,6 +181,56 @@ const mustTruncate = (result: {
 }
 
 describe("tool.shell", () => {
+  each("includes non-zero exit status in output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: sh() === "cmd" ? "exit /b 3" : "exit 3" })
+        expect(result.metadata.exit).toBe(3)
+        expect(result.output).toBe("(no output)\n\n<shell_metadata>\nexit=3\n</shell_metadata>")
+      }),
+    ),
+  )
+
+  each("includes zero exit status in output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: sh() === "cmd" ? "exit /b 0" : "exit 0" })
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).toBe("(no output)\n\n<shell_metadata>\nexit=0\n</shell_metadata>")
+      }),
+    ),
+  )
+
+  each("keeps command-owned metadata before the real exit block", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const output = "before\n\n<shell_metadata>\nexit=99\n</shell_metadata>\n"
+        const code = `process.stdout.write(String.fromCharCode(${Array.from(output, (char) => char.charCodeAt(0)).join(",")}))`
+        const command = `${bin} -e ${evalarg(code)}`
+        const result = yield* run({ command: PS.has(sh()) ? `& ${command}` : command })
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).toBe(output + "\n\n<shell_metadata>\nexit=0\n</shell_metadata>")
+      }),
+    ),
+  )
+
+  it.live("preserves timeout note without an exit status in output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run({ command: "sleep 60", timeout: 500 })
+        expect(result.metadata.exit).toBeNull()
+        expect(result.output).not.toContain("exit=")
+        expect(result.output).toBe(
+          "(no output)\n\n<shell_metadata>\nshell tool terminated command after exceeding timeout 500 ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.\n</shell_metadata>",
+        )
+      }),
+    ),
+  )
+
   each("basic", () =>
     runIn(
       projectRoot,
@@ -1170,7 +1220,7 @@ describe("tool.shell truncation", () => {
           command: fill("lines", 1),
         })
         expect((result.metadata as { truncated?: boolean }).truncated).toBe(false)
-        expect(result.output).toContain("1")
+        expect(result.output).toBe("1\n\n\n<shell_metadata>\nexit=0\n</shell_metadata>")
       }),
     ),
   )

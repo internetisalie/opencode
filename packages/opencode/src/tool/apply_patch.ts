@@ -5,9 +5,9 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { InstanceState } from "@/effect/instance-state"
 import { Patch } from "../patch"
-import { createTwoFilesPatch, diffLines } from "diff"
+import { diffLines } from "diff"
 import { assertExternalDirectoryEffect } from "./external-directory"
-import { trimDiff } from "./edit"
+import { boundedPatch, cutPatch, MAX_DIFF_CHARS, patchHeader } from "./edit"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import DESCRIPTION from "./apply_patch.txt"
@@ -79,7 +79,7 @@ export const ApplyPatchTool = Tool.define(
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
             const next = Bom.split(newContent)
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, next.text))
+            const diff = boundedPatch(filePath, oldContent, next.text)
 
             let additions = 0
             let deletions = 0
@@ -130,7 +130,7 @@ export const ApplyPatchTool = Tool.define(
               return yield* Effect.fail(new Error(`apply_patch verification failed: ${error}`))
             }
 
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, newContent))
+            const diff = boundedPatch(filePath, oldContent, newContent)
 
             let additions = 0
             let deletions = 0
@@ -169,8 +169,6 @@ export const ApplyPatchTool = Tool.define(
               ),
             )
             const contentToDelete = source.text
-            const deleteDiff = trimDiff(createTwoFilesPatch(filePath, filePath, contentToDelete, ""))
-
             const deletions = contentToDelete.split("\n").length
 
             fileChanges.push({
@@ -178,17 +176,22 @@ export const ApplyPatchTool = Tool.define(
               oldContent: contentToDelete,
               newContent: "",
               type: "delete",
-              diff: deleteDiff,
+              // A deletion carries no diff body: the type and the line count say what was removed, and the content is
+              // still on disk. The header keeps it a patch every viewer lists.
+              diff: patchHeader(filePath),
               additions: 0,
               deletions,
               bom: source.bom,
             })
 
-            totalDiff += deleteDiff + "\n"
+
+            totalDiff += patchHeader(filePath)
             break
           }
         }
       }
+
+      totalDiff = cutPatch(totalDiff, MAX_DIFF_CHARS * 2)
 
       // Build per-file metadata for UI rendering (used for both permission and result)
       const files = fileChanges.map((change) => ({

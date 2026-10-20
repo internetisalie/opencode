@@ -473,7 +473,9 @@ function stashEcho(data: SessionData, part: ToolPart) {
     return
   }
 
-  const text = output.replace(/^\n+/, "")
+  const text = output
+    .replace(/\n\n<shell_metadata>\n(?:(?!<\/?shell_metadata>)[\s\S])*\n<\/shell_metadata>$/, "")
+    .replace(/^\n+/, "")
   if (!text.trim()) {
     return
   }
@@ -957,7 +959,13 @@ export function reduceSessionData(input: SessionDataInput): SessionDataOutput {
         data.ids.add(part.id)
         stashEcho(data, part)
 
-        const output = part.state.output
+        const output =
+          part.tool === "bash" && typeof part.state.output === "string"
+            ? part.state.output.replace(
+                /\n\n<shell_metadata>\n(?:(?!<\/?shell_metadata>)[\s\S])*\n<\/shell_metadata>$/,
+                "",
+              )
+            : part.state.output
         if (mode.output && typeof output === "string" && output.trim()) {
           commits.push({
             kind: "tool",

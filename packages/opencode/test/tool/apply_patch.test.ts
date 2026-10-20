@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import path from "path"
+import { parsePatch } from "diff"
 import * as fs from "fs/promises"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -545,5 +546,139 @@ EOF`
       // Result has ASCII quotes because that's what the patch specifies
       expect(yield* readText(target)).toBe(`He said "hi"\nsome${emDash}dash\nend\n`)
     }),
+  )
+  it.instance(
+    "carries a header-only patch for a deleted file, however large",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "big.bundle")
+        const lines = 400_000
+        yield* writeText(target, Array.from({ length: lines }, (_, i) => `row ${i} of the bundle`).join("\n") + "\n")
+
+        const result = yield* execute(
+          { patchText: "*** Begin Patch\n*** Delete File: big.bundle\n*** End Patch" },
+          ctx,
+        )
+
+        expect(result.output).toMatch(/D big\.bundle/)
+        yield* expectReadFailure(target)
+        const limit = 128 * 1024
+        const file = calls[0].metadata.files[0]
+        expect(file.type).toBe("delete")
+        expect(file.patch).toContain(`--- ${target}`)
+        expect(file.patch).not.toContain("row 1 of")
+        expect(file.patch.length).toBeLessThan(1024)
+        expect(parsePatch(file.patch)[0].hunks).toEqual([])
+        expect(file.deletions).toBeGreaterThanOrEqual(lines)
+        expect(result.metadata.diff.length).toBeLessThan(1024)
+        expect(calls[0].metadata.diff).toBe(result.metadata.diff)
+        expect(JSON.stringify(result.metadata).length).toBeLessThan(limit)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "cuts a large diff at a line boundary and keeps it a valid patch with exact counts",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "wide.txt")
+        yield* writeText(target, "old\n")
+        const lines = 6_000
+        const body = Array.from({ length: lines }, (_, i) => `+línea ${i} 日本語 😀 with some padding text`).join("\n")
+
+        const result = yield* execute(
+          { patchText: `*** Begin Patch\n*** Add File: wide.txt\n${body}\n*** End Patch` },
+          ctx,
+        )
+
+        const file = calls[0].metadata.files[0]
+        expect(file.patch.length).toBeLessThanOrEqual(128 * 1024)
+        expect(file.patch.endsWith("\n")).toBe(true)
+        const hunk = parsePatch(file.patch)[0].hunks[0]
+        const kept = file.patch.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length
+        expect(hunk.newLines).toBe(kept)
+        expect(hunk.newLines).toBeLessThan(lines)
+        expect(file.additions).toBe(lines)
+        expect(result.metadata.diff.length).toBeLessThanOrEqual(256 * 1024)
+        expect((yield* readText(target)).split("\n").length).toBe(lines + 1)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "gives a file over the size gate a header-only patch and never builds its diff",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "huge.txt")
+        yield* writeText(target, "old\n")
+        const lines = 40_000
+        const body = Array.from({ length: lines }, (_, i) => `+row ${i} of a very large added file`).join("\n")
+
+        yield* execute({ patchText: `*** Begin Patch\n*** Add File: huge.txt\n${body}\n*** End Patch` }, ctx)
+
+        const file = calls[0].metadata.files[0]
+        expect(file.patch.length).toBeLessThan(1024)
+        expect(parsePatch(file.patch)[0].hunks).toEqual([])
+        expect(file.additions).toBe(lines)
+        expect((yield* readText(target)).split("\n").length).toBe(lines + 1)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "bounds the whole-patch diff across many files and keeps it parseable",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const rows = Array.from({ length: 2_800 }, (_, i) => `+row ${i} padding padding padding`).join("\n")
+        const names = Array.from({ length: 8 }, (_, i) => `many${i}.txt`)
+        const patchText = `*** Begin Patch\n${names.map((n) => `*** Add File: ${n}\n${rows}`).join("\n")}\n*** End Patch`
+
+        const result = yield* execute({ patchText }, ctx)
+
+        expect(calls[0].metadata.files).toHaveLength(8)
+        expect(calls[0].metadata.files.every((f) => f.patch.length <= 128 * 1024)).toBe(true)
+        expect(result.metadata.diff.length).toBeLessThanOrEqual(256 * 1024)
+        expect(() => parsePatch(result.metadata.diff)).not.toThrow()
+        expect(parsePatch(result.metadata.diff).length).toBeLessThan(names.length)
+        for (const name of names) expect((yield* readText(path.join(test.directory, name))).split("\n")).toHaveLength(2_801)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "bounds the diff of an update whose change is over the limit but whose file is under the size gate",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "rewrite.txt")
+        const oldRows = Array.from({ length: 1_800 }, (_, i) => `old ${i} padding padding padding padding padding padding padding padding`)
+        yield* writeText(target, oldRows.join("\n") + "\n")
+        const removed = oldRows.map((row) => `-${row}`).join("\n")
+        const added = oldRows.map((_, i) => `+new ${i} padding padding padding padding padding padding padding padding`).join("\n")
+
+        yield* execute(
+          { patchText: `*** Begin Patch\n*** Update File: rewrite.txt\n@@\n${removed}\n${added}\n*** End Patch` },
+          ctx,
+        )
+
+        const file = calls[0].metadata.files[0]
+        expect(file.patch.length).toBeLessThanOrEqual(128 * 1024)
+        const hunk = parsePatch(file.patch)[0].hunks[0]
+        const lines = file.patch.split("\n")
+        expect(hunk.oldLines).toBe(lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length)
+        expect(hunk.newLines).toBe(lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length)
+        expect(file.additions).toBe(1_800)
+        expect(file.deletions).toBe(1_800)
+      }),
+    { git: true },
   )
 })
