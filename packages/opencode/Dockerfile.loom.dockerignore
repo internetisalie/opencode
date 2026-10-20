@@ -1,0 +1,5 @@
+*
+!dist/
+!dist/opencode-linux-x64/
+!dist/opencode-linux-x64/bin/
+!dist/opencode-linux-x64/bin/opencode
