@@ -12,7 +12,7 @@ on:
       - bun.lock
   push:
     branches: [dev]
-    tags: [loom-image-*]
+    tags: [loom-image-*, v1.*]
   workflow_dispatch:
 
 permissions:
@@ -25,14 +25,48 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Resolve binary version and image tags
+        id: metadata
+        shell: bash
+        run: |
+          version="0.0.0-internetisalie-dev.sha${GITHUB_SHA}"
+          channel=internetisalie-dev
+          numbered=false
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" == v1.* ]]; then
+            if [[ ! "$GITHUB_REF_NAME" =~ ^v1\.[0-9]+\.[0-9]+-internetisalie\.[0-9]+$ ]]; then
+              printf 'Invalid numbered V1 tag: %s\n' "$GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            version="${GITHUB_REF_NAME#v}"
+            channel=latest
+            numbered=true
+          fi
+          {
+            printf 'version=%s\nchannel=%s\nnumbered=%s\n' "$version" "$channel" "$numbered"
+            printf 'tags<<EOF\nghcr.io/internetisalie/opencode-stable:%s\n' "$GITHUB_SHA"
+            if [[ "$numbered" == true ]]; then
+              printf 'ghcr.io/internetisalie/opencode-stable:%s\n' "$GITHUB_REF_NAME"
+            fi
+            printf 'EOF\n'
+          } >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-bun
       - name: Build Linux x64 server binary
         working-directory: packages/opencode
+        env:
+          OPENCODE_VERSION: ${{ steps.metadata.outputs.version }}
+          OPENCODE_CHANNEL: ${{ steps.metadata.outputs.channel }}
         run: bun script/build.ts --single --skip-install --skip-embed-web-ui
       - name: Verify binary
+        env:
+          OPENCODE_VERSION: ${{ steps.metadata.outputs.version }}
+          NUMBERED: ${{ steps.metadata.outputs.numbered }}
         run: |
           test -x packages/opencode/dist/opencode-linux-x64/bin/opencode
-          packages/opencode/dist/opencode-linux-x64/bin/opencode --version
+          version="$(packages/opencode/dist/opencode-linux-x64/bin/opencode --version)"
+          printf '%s\n' "$version"
+          if [[ "$NUMBERED" == true ]]; then
+            test "$version" = "$OPENCODE_VERSION"
+          fi
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Login to GHCR
         if: github.event_name != 'pull_request'
@@ -48,4 +82,4 @@ jobs:
           file: packages/opencode/Dockerfile.loom
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/internetisalie/opencode-stable:${{ github.sha }}
+          tags: ${{ steps.metadata.outputs.tags }}
