@@ -6,6 +6,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
@@ -116,7 +117,7 @@ export const ReadTool = Tool.define<
 
     const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
       // LSP warm-up is optional; do not let a background defect fail an otherwise successful read.
-      yield* lsp.touchFile(filepath).pipe(Effect.ignoreCause, Effect.forkIn(scope))
+      yield* InstanceLifetime.fork(lsp.touchFile(filepath).pipe(Effect.ignoreCause), scope, { kind: "warm" })
     })
 
     const readSample = Effect.fn("ReadTool.readSample")(function* (

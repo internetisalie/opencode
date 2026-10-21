@@ -1,4 +1,5 @@
 import * as InstanceState from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { registerDisposer } from "@/effect/instance-registry"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { Plugin } from "@/plugin"
@@ -16,7 +17,7 @@ import {
   PTY_CONNECT_TOKEN_HEADER,
   PTY_CONNECT_TOKEN_HEADER_VALUE,
 } from "@/server/shared/pty-ticket"
-import { Effect, Layer, Option, Queue, Schema } from "effect"
+import { Deferred, Effect, Exit, Layer, Option, Queue, Schema, Scope } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Socket from "effect/unstable/socket/Socket"
@@ -44,6 +45,7 @@ export const ptyHandlers = HttpApiBuilder.group(InstanceHttpApi, "pty", (handler
     const cors = yield* CorsConfig
     const plugin = yield* Plugin.Service
     const locations = yield* LocationServiceMap.Service
+    const scope = yield* Scope.Scope
     const unregister = registerDisposer((directory) =>
       Effect.runPromise(locations.invalidate(Location.Ref.make({ directory: AbsolutePath.make(directory) }))),
     )
@@ -69,16 +71,40 @@ export const ptyHandlers = HttpApiBuilder.group(InstanceHttpApi, "pty", (handler
     const create = Effect.fn("PtyHttpApi.create")(function* (ctx: { payload: typeof Pty.CreateInput.Type }) {
       const cwd = ctx.payload.cwd || (yield* InstanceState.context).directory
       const shell = yield* plugin.trigger("shell.env", { cwd }, { env: {} as Record<string, string> })
-      return yield* pty(
-        Pty.Service.use((service) =>
-          service.create({
-            ...ctx.payload,
-            args: ctx.payload.args ? [...ctx.payload.args] : undefined,
-            cwd,
-            env: { ...ctx.payload.env, ...shell.env },
-          }),
+      const input = {
+        ...ctx.payload,
+        args: ctx.payload.args ? [...ctx.payload.args] : undefined,
+        cwd,
+        env: { ...ctx.payload.env, ...shell.env },
+      }
+      if (!(yield* InstanceLifetime.enabled)) return yield* pty(Pty.Service.use((service) => service.create(input)))
+      const created = yield* Deferred.make<Pty.Info>()
+      const ended = yield* Deferred.make<void>()
+      // Keep the actual legacy location layer borrowed for the whole terminal
+      // lifetime, including terminals with no websocket. Its v2 fallback TTL
+      // must not close a running process underneath the directory lease.
+      yield* InstanceLifetime.fork(
+        pty(Effect.gen(function* () {
+          const service = yield* Pty.Service
+          const info = yield* service.create(input)
+          const attachment = yield* service.attach(info.id, {
+            cursor: -1,
+            onData: () => {},
+            onEnd: () => { Deferred.doneUnsafe(ended, Effect.void) },
+          }).pipe(
+            Effect.catchTag("Pty.ExitedError", () => Deferred.succeed(ended, undefined).pipe(Effect.as(undefined))),
+          )
+          attachment?.activate()
+          yield* Deferred.succeed(created, info)
+          yield* Deferred.await(ended).pipe(Effect.ensuring(Effect.sync(() => attachment?.detach())))
+        })).pipe(
+          Effect.orDie,
+          Effect.onExit((exit) => Exit.isFailure(exit) ? Deferred.failCause(created, exit.cause) : Effect.void),
         ),
+        scope,
+        { kind: "pty", owned: true },
       )
+      return yield* Deferred.await(created)
     })
 
     const get = Effect.fn("PtyHttpApi.get")(function* (ctx: { params: { ptyID: PtyID } }) {

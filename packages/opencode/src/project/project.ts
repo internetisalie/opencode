@@ -10,6 +10,7 @@ import { GlobalBus } from "@/bus/global"
 import { which } from "@opencode-ai/core/util/which"
 import { Command } from "@/command"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { Effect, Layer, Scope, Context, Stream, Types, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -237,7 +238,7 @@ const layer = Layer.effect(
             time: { created: Date.now(), updated: Date.now() },
           }
 
-      if (flags.experimentalIconDiscovery) yield* discover(existing).pipe(Effect.ignore, Effect.forkIn(scope))
+      if (flags.experimentalIconDiscovery) yield* InstanceLifetime.fork(discover(existing).pipe(Effect.ignore), scope)
 
       const result: Info = {
         ...existing,

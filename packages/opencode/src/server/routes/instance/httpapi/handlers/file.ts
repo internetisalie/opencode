@@ -1,4 +1,6 @@
 import * as InstanceState from "@/effect/instance-state"
+import { LegacyLocations } from "@/effect/legacy-locations"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -15,8 +17,10 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
   Effect.gen(function* () {
     const ripgrep = yield* Ripgrep.Service
     const locations = yield* LocationServiceMap.Service
+    yield* LegacyLocations.register(locations)
 
     const filesystem = Effect.fnUntraced(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
+      yield* InstanceLifetime.retain(locations, locations.get(Location.Ref.make({ directory: AbsolutePath.make((yield* InstanceState.context).directory) })))
       return yield* effect.pipe(
         Effect.provide(
           locations.get(Location.Ref.make({ directory: AbsolutePath.make((yield* InstanceState.context).directory) })),

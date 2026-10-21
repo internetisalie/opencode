@@ -1,10 +1,13 @@
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
+import { EffectBridge } from "@/effect/bridge"
+import { IncomingMessage } from "node:http"
 import { GlobalBus } from "@/bus/global"
 import { EventV2 } from "@opencode-ai/core/event"
-import { Effect, Queue } from "effect"
+import { Cause, Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
-import { HttpServerResponse } from "effect/unstable/http"
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { EventApi } from "../groups/event"
@@ -26,11 +29,35 @@ function eventResponse(events: EventV2.Interface) {
   return Effect.gen(function* () {
     const instance = yield* InstanceState.context
     const workspaceID = yield* InstanceState.workspaceID
+    const release = yield* InstanceLifetime.lease("event")
+    yield* Effect.addFinalizer(() => release)
     // Listener registration is eager, so events published after this point cannot
     // be lost while the HTTP body fiber is starting or emitting server.connected.
-    const queue = yield* Queue.unbounded<EventV2.Payload>()
+    const queue = yield* Queue.unbounded<EventV2.Payload, Cause.Done>()
     const unsubscribe = yield* events.listen((event) => Effect.sync(() => Queue.offerUnsafe(queue, event)))
     yield* Effect.addFinalizer(() => unsubscribe)
+    if (yield* InstanceLifetime.enabled) {
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const bridge = yield* EffectBridge.make()
+      // Also cover disconnect before the body consumer starts. Some HTTP
+      // adapters leave the body producer alive after a client cancels its reader.
+      const disconnect = () => {
+        Queue.endUnsafe(queue)
+        bridge.fork(unsubscribe.pipe(Effect.ensuring(release)))
+      }
+      const source = request.source
+      if (source instanceof Request) {
+        source.signal.addEventListener("abort", disconnect, { once: true })
+        yield* Effect.addFinalizer(() => Effect.sync(() => source.signal.removeEventListener("abort", disconnect)))
+        if (source.signal.aborted) disconnect()
+      }
+      if (source instanceof IncomingMessage) {
+        const socket = source.socket
+        socket.once("close", disconnect)
+        yield* Effect.addFinalizer(() => Effect.sync(() => socket.off("close", disconnect)))
+        if (socket.destroyed) disconnect()
+      }
+    }
     const stream = Stream.fromQueue(queue).pipe(
       Stream.filter(
         (event) =>
@@ -72,7 +99,7 @@ function eventResponse(events: EventV2.Interface) {
         Stream.map(eventData),
         Stream.pipeThroughChannel(Sse.encode()),
         Stream.encodeText,
-        Stream.ensuring(Effect.logInfo("event disconnected")),
+        Stream.ensuring(unsubscribe.pipe(Effect.ensuring(release), Effect.andThen(Effect.logInfo("event disconnected")))),
       ),
       {
         contentType: "text/event-stream",

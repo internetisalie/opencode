@@ -19,6 +19,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceLifetime } from "@/effect/instance-lifetime"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
@@ -313,7 +314,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+      const work = promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })
@@ -323,8 +324,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
             })
           }),
         ),
-        Effect.forkIn(scope, { startImmediately: true }),
       )
+      // WorkspaceRoutingMiddleware has already resolved the persisted session
+      // directory, so this reservation belongs to that generation.
+      yield* InstanceLifetime.fork(work, scope, { startImmediately: true, kind: "prompt_async" })
       return HttpApiSchema.NoContent.make()
     })
 
