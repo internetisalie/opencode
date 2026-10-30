@@ -59,10 +59,9 @@ if (!source) {
   it.live("registers the Simple Memory tool catalog on a disposable v2 Location", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
-      const global = yield* tmpdirScoped()
       const module = yield* Effect.promise(() => import(pathToFileURL(source).href))
       const sdk = yield* SdkPlugins.Service
-      yield* sdk.register(PluginPromise.fromPromise(module.createV2MemoryPlugin(() => global.path)))
+      yield* sdk.register(PluginPromise.fromPromise(module.default))
       const locations = yield* LocationServiceMap.Service
       yield* Effect.gen(function* () {
         const plugins = yield* Plugin.Service

@@ -38,7 +38,7 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
         with:
-          install-flags: --os="*" --cpu="*"
+          install-flags: --os="*" --cpu="*" --libc="*"
 
       - name: Typecheck changed server packages sequentially
         run: |
@@ -74,7 +74,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/.agent-scratch"
           suite=$(mktemp -d "$GITHUB_WORKSPACE/.agent-scratch/XXXXXX")
-          native="$(cd packages/server && bun -e 'console.log(require("@opencode-ai/pty").binaryPath)')"
+          native="$(cd packages/server && bun -e 'console.log(require("@opencode/pty").binaryPath)')"
           cleanup() {
             result=$?
             trap - EXIT
@@ -114,7 +114,7 @@ jobs:
           mkdir -p "$suite"/{d,c,f,s,r,t,h,o}
           trap cleanup EXIT
           test -x "$native"
-          test "$(sha256sum "$native")" = "a02e0cf5a03cf78364ba903d16cfd64b37178128839393f0e84b967f9caeeb84  $native"
+          test "$(sha256sum "$native")" = "375334d9e20ffd7f7cd111eaaed7802d87ce13c9c15608ec42942b2b5da2e1b7  $native"
           cd "$GITHUB_WORKSPACE/packages/server"
           timeout --signal=TERM --kill-after=5s 180s bun test test/persistent-pty.test.ts test/passive-pty-observation.test.ts
 
@@ -127,7 +127,7 @@ jobs:
             export OPENCODE_VERSION="$(node -p "require('./package.json').version")-internetisalie.${GITHUB_SHA:0:12}"
           fi
           export OPENCODE_CHANNEL=internetisalie-v2
-          bun run script/build.ts --target=opencode-linux-x64-baseline-musl --skip-install --skip-web-ui
+          OPENCODE_TARGET=linux-x64-baseline-musl bun run script/build.ts --skip-install --skip-web-ui
 
       - name: Smoke test the server image
         run: |

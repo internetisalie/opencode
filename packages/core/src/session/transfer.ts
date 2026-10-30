@@ -12,12 +12,14 @@ import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { App } from "../app.js"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
+import { Instance } from "../instance/service.js"
 import { Location } from "../location.js"
 import { Project } from "../project.js"
 import { upsertProject } from "../project/sql.js"
 import { AbsolutePath, RelativePath } from "../schema.js"
 import { Session } from "../session.js"
 import { Slug } from "../util/slug.js"
+import { SessionBlob } from "./blob.js"
 import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
@@ -61,6 +63,7 @@ const layer = Layer.effect(
     const app = yield* App.Metadata
     const bus = yield* Bus.Service
     const { db } = yield* Database.Service
+    const instances = yield* Instance.Service
     const projects = yield* Project.Service
     const sessions = yield* Session.Service
     const encodeMessage = Schema.encodeSync(SessionMessage.Info)
@@ -84,6 +87,9 @@ const layer = Layer.effect(
       const importedAt = input.source
         ? DateTime.toEpochMillis(input.data.info.time.updated)
         : yield* Clock.currentTimeMillis
+      const subpath = RelativePath.make(
+        path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
+      )
       const messages = input.data.messages.filter(isSettled).map((message, index) => {
         const encoded = encodeMessage(message)
         const { id: _, type, ...data } = encoded
@@ -96,6 +102,15 @@ const layer = Layer.effect(
           data,
         }
       })
+      const split = messages.map((message) => SessionBlob.split(message.data))
+      const media =
+        split.some((row) => row.moved) &&
+        (yield* SessionBlob.enabledFor(instances, {
+          ...input.data.info,
+          projectID: project.id,
+          location: input.location,
+          subpath,
+        }))
       yield* bus
         .publish(
           SessionEvent.Created,
@@ -106,9 +121,7 @@ const layer = Layer.effect(
             version: app.version,
             projectID: project.id,
             location: input.location,
-            subpath: RelativePath.make(
-              path.relative(project.directory, input.location.directory).replaceAll("\\", "/"),
-            ),
+            subpath,
             title: input.data.info.title,
             agent: input.data.info.agent,
             model: input.data.info.model,
@@ -120,7 +133,22 @@ const layer = Layer.effect(
             commit: (seq) =>
               Effect.gen(function* () {
                 if (messages.length > 0) {
-                  yield* db.insert(SessionMessageTable).values(messages).run().pipe(Effect.orDie)
+                  if (media) yield* Effect.forEach(split, (row) => SessionBlob.save(db, row.blobs), { discard: true })
+                  const stored = media
+                    ? messages.map((message, i) => ({ ...message, data: split[i]!.data }))
+                    : messages
+                  yield* db.insert(SessionMessageTable).values(stored).run().pipe(Effect.orDie)
+                  if (media)
+                    yield* Effect.forEach(
+                      stored,
+                      (message, i) =>
+                        SessionBlob.recordHashes(
+                          db,
+                          { sessionID, messageID: message.id, seq: message.seq },
+                          new Set(split[i]!.blobs.map((blob) => blob.hash)),
+                        ),
+                      { discard: true },
+                    )
                   yield* Bus.reserveSequence(db, sessionID, seq + messages.length)
                 }
                 if (input.source) {
@@ -143,6 +171,13 @@ const layer = Layer.effect(
                     tokens_cache_write: input.data.info.tokens.cache.write,
                     time_created: DateTime.toEpochMillis(input.data.info.time.created),
                     time_updated: importedAt,
+                    time_busy:
+                      input.data.info.time.idle && input.data.info.time.busy
+                        ? Math.min(
+                            DateTime.toEpochMillis(input.data.info.time.idle),
+                            DateTime.toEpochMillis(input.data.info.time.busy),
+                          )
+                        : null,
                     time_idle: input.data.info.time.idle ? DateTime.toEpochMillis(input.data.info.time.idle) : null,
                     time_viewed:
                       input.data.info.time.idle && input.data.info.time.viewed
@@ -230,6 +265,7 @@ const layer = Layer.effect(
                 .all()
                 .pipe(Effect.orDie)
               const messages = input.data.messages.filter(isSettled)
+              const hydrated = yield* SessionBlob.hydrate(db, rows)
               if (messages.length < rows.length)
                 return yield* new MirrorConflictError({ sessionID, reason: "Snapshot truncates settled history" })
               if (
@@ -240,7 +276,7 @@ const layer = Layer.effect(
                     row.id !== messages[index]!.id ||
                     row.type !== type ||
                     row.time_created !== DateTime.toEpochMillis(messages[index]!.time.created) ||
-                    !isDeepStrictEqual(row.data, data)
+                    !isDeepStrictEqual(hydrated[index]!.data, data)
                   )
                 })
               )
@@ -281,8 +317,21 @@ const layer = Layer.effect(
                   tokens_cache_read: input.data.info.tokens.cache.read,
                   tokens_cache_write: input.data.info.tokens.cache.write,
                   time_updated: updated,
+                  time_busy:
+                    input.data.info.time.idle && input.data.info.time.busy
+                      ? Math.min(
+                          DateTime.toEpochMillis(input.data.info.time.idle),
+                          DateTime.toEpochMillis(input.data.info.time.busy),
+                        )
+                      : null,
                   time_idle: input.data.info.time.idle ? DateTime.toEpochMillis(input.data.info.time.idle) : null,
-                  time_viewed: input.data.info.time.viewed ? DateTime.toEpochMillis(input.data.info.time.viewed) : null,
+                  time_viewed:
+                    input.data.info.time.idle && input.data.info.time.viewed
+                      ? Math.min(
+                          DateTime.toEpochMillis(input.data.info.time.idle),
+                          DateTime.toEpochMillis(input.data.info.time.viewed),
+                        )
+                      : null,
                   idle_outcome: input.data.info.time.idle ? (input.data.info.outcome ?? null) : null,
                   time_archived: input.data.info.time.archived
                     ? DateTime.toEpochMillis(input.data.info.time.archived)
@@ -309,7 +358,7 @@ const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [App.node, Bus.node, Database.node, Project.node, Session.node],
+  deps: [App.node, Bus.node, Database.node, Instance.node, Project.node, Session.node],
 })
 
 function isSettled(message: SessionMessage.Info) {
@@ -419,20 +468,17 @@ function sanitizeMessage(message: SessionMessage.Info): SessionMessage.Info {
           return {
             ...content,
             text: redact("text", message.id, content.text),
-            state: content.state ? { redacted: `text-state:${message.id}` } : undefined,
+            native: content.native ? { redacted: `text-native:${message.id}` } : undefined,
           }
         if (content.type === "reasoning")
           return {
             ...content,
             text: redact("reasoning", message.id, content.text),
-            state: content.state ? { redacted: `reasoning-state:${message.id}` } : undefined,
+            native: content.native ? { redacted: `reasoning-native:${message.id}` } : undefined,
           }
         return {
           ...content,
-          providerState: content.providerState ? { redacted: `tool-provider-state:${message.id}` } : undefined,
-          providerResultState: content.providerResultState
-            ? { redacted: `tool-provider-result-state:${message.id}` }
-            : undefined,
+          native: content.native ? { redacted: `tool-native:${message.id}` } : undefined,
           state: sanitizeToolState(message.id, content.state),
         }
       }),
@@ -447,13 +493,7 @@ function sanitizeMessage(message: SessionMessage.Info): SessionMessage.Info {
       ...message,
       metadata: meta,
       summary: redact("compaction-summary", message.id, message.summary),
-      recent: redact("compaction-recent", message.id, message.recent),
-      ...(message.status === "completed"
-        ? {
-            providerState: metadata("compaction-provider-state", message.id, message.providerState),
-            providerContext: undefined,
-          }
-        : {}),
+      ...(message.status === "completed" ? { native: metadata("compaction-native", message.id, message.native) } : {}),
     }
   }
   return { ...message, metadata: meta }

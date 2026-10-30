@@ -1,5 +1,5 @@
 import type { OpenCodeClient } from "@opencode/client"
-import type { CredentialApi, GenerateApi, PluginApi } from "@opencode/client/promise/api"
+import type { CredentialApi, ExperimentalGenerateApi, PluginApi } from "@opencode/client/promise/api"
 import type { Location } from "@opencode/schema/location"
 import type { PluginOptions } from "../options.js"
 import type { App } from "../app.js"
@@ -35,12 +35,15 @@ export interface Context {
   readonly event: EventDomain
   readonly experimental: {
     readonly terminal: Pick<OpenCodeClient["experimental"]["persistentPty"], "read">
+    /** Stateless generation with a model and a prompt: no session, history or tools. */
+    readonly generate: ExperimentalGenerateApi
   }
   readonly integration: IntegrationDomain
   readonly http: HttpDomain
   readonly mcp: MCPDomain
   readonly model: ModelDomain
-  readonly generate: GenerateApi
+  /** @deprecated Use `experimental.generate.text`. */
+  readonly generate: Pick<ExperimentalGenerateApi, "text">
   readonly permission: PermissionDomain
   readonly plugin: Pick<PluginApi, "list">
   readonly provider: ProviderDomain

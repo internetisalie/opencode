@@ -16,9 +16,8 @@ if (!source) {
   it.live("activates Simple Memory and serves its scoped HTTP route", () =>
     Effect.gen(function* () {
       const location = yield* tmpdirScoped()
-      const global = yield* tmpdirScoped()
       const module = yield* Effect.promise(() => import(pathToFileURL(source).href))
-      const plugin = module.createV2MemoryPlugin(() => global.path)
+      const plugin = module.default
       const store = SdkPlugins.Service.of({
         register: () => Effect.void,
         all: () => [{ ...PluginPromise.fromPromise(plugin), revision: "test", source: { type: "sdk" as const } }],

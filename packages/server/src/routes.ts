@@ -20,6 +20,7 @@ import { Session } from "@opencode/core/session"
 import { Instance } from "@opencode/core/instance/service"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { SessionStore } from "@opencode/core/session/store"
+import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { Job } from "@opencode/core/job"
 import { Mcp } from "@opencode/core/mcp/index"
@@ -29,11 +30,13 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { LocationActivity } from "@opencode/core/location-activity"
 import { ModelsDev } from "@opencode/core/models-dev"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
+import { Schedule } from "@opencode/core/schedule"
 import { PluginUpdate } from "@opencode/core/plugin/update"
 import { SdkPlugins } from "@opencode/core/plugin/sdk"
 import { WellKnown } from "@opencode/core/wellknown"
 import { Workspace } from "@opencode/core/workspace"
 import { Watcher } from "@opencode/core/filesystem/watcher"
+import { FileWatch } from "@opencode/core/filesystem/file-watch"
 import { HttpRouter } from "effect/http"
 import { HttpApiBuilder } from "effect/http-api"
 import { Context, Effect, Layer, Option } from "effect"
@@ -43,7 +46,6 @@ import { CorsConfig } from "./cors"
 import { handlers } from "./handlers"
 import { authorizationLayer } from "./middleware/authorization"
 import { schemaErrorLayer } from "./middleware/schema-error"
-import { PtyEnvironment } from "./pty-environment"
 import { ServerPairing } from "./pairing"
 import { layer } from "./location"
 import { formLocationLayer } from "./middleware/form-location"
@@ -56,12 +58,12 @@ import { RemoteEventConfig } from "./remote-events"
 
 const applicationServiceNodes = [
   Global.node,
+  FSUtil.node,
   Database.node,
   Bus.node,
   EventLogger.node,
   httpClient,
   Job.node,
-  FSUtil.node,
   Project.node,
   Project.sweepNode,
   Worktree.node,
@@ -69,6 +71,7 @@ const applicationServiceNodes = [
   SessionStore.node,
   Instance.node,
   SessionTransfer.node,
+  InstructionEntry.node,
   SdkPlugins.node,
   PluginUpdate.node,
   PermissionSaved.node,
@@ -76,12 +79,13 @@ const applicationServiceNodes = [
   PersistentPty.node,
   Credential.node,
   WellKnown.node,
-  PtyEnvironment.node,
   ServerPairing.node,
   LocationServiceMap.node,
   LocationActivity.node,
   SessionRestart.node,
+  Schedule.node,
   Workspace.node,
+  FileWatch.node,
 ] as const
 const applicationServices = LayerNode.group(applicationServiceNodes)
 
@@ -136,6 +140,7 @@ function makeRoutes<AuthError, AuthServices>(
     App.node.replace(App.configured(options.app)),
     ModelsDev.node.replace(ModelsDev.configured(options.models)),
     Watcher.node.replace(Watcher.configured({ enabled: options.fs?.filewatcher })),
+    FileWatch.node.replace(FileWatch.configured({ enabled: options.fs?.filewatcher })),
     FileSystemSearch.node.replace(FileSystemSearch.configured({ fff: options.fs?.fff })),
     Global.node.replace(Global.layerWith(options.config?.directory ? { config: options.config.directory } : {})),
     Config.node.replace(
