@@ -197,8 +197,23 @@ test("service config manages environment variables", async () => {
 
 test("saved service environment cannot move the registration's state directory", async () => {
   expect(ServiceConfig.processEnv(undefined)).toBeUndefined()
-  expect(ServiceConfig.processEnv({ XDG_STATE_HOME: "/custom/state", XDG_DATA_HOME: "/custom/data", A: "1" })).toEqual({
+  const saved = {
+    XDG_STATE_HOME: "/custom/state",
+    OPENCODE_STATE_HOME: "/custom/opencode-state",
     XDG_DATA_HOME: "/custom/data",
+    OPENCODE_DATA_HOME: "/custom/opencode-data",
+    A: "1",
+  }
+  expect(ServiceConfig.processEnv(saved)).toEqual({
+    XDG_DATA_HOME: "/custom/data",
+    OPENCODE_DATA_HOME: "/custom/opencode-data",
+    A: "1",
+  })
+  expect(saved).toEqual({
+    XDG_STATE_HOME: "/custom/state",
+    OPENCODE_STATE_HOME: "/custom/opencode-state",
+    XDG_DATA_HOME: "/custom/data",
+    OPENCODE_DATA_HOME: "/custom/opencode-data",
     A: "1",
   })
 
@@ -206,14 +221,11 @@ test("saved service environment cannot move the registration's state directory",
   const layer = Global.layerWith({ config: path.join(root, "config"), state: path.join(root, "state") })
   try {
     await fs.mkdir(path.join(root, "config"), { recursive: true })
-    await Bun.write(
-      path.join(root, "config", ServiceConfig.filename()),
-      JSON.stringify({ env: { XDG_STATE_HOME: path.join(root, "elsewhere"), A: "1" } }),
-    )
+    await Bun.write(path.join(root, "config", ServiceConfig.filename()), JSON.stringify({ env: saved }))
     const options = await Effect.runPromise(
       ServiceConfig.options().pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer)),
     )
-    expect(options.env).toEqual({ A: "1" })
+    expect(options.env).toEqual({ XDG_DATA_HOME: "/custom/data", OPENCODE_DATA_HOME: "/custom/opencode-data", A: "1" })
     expect(options.file).toBe(path.join(root, "state", ServiceConfig.filename()))
   } finally {
     await fs.rm(root, { recursive: true, force: true })

@@ -1,8 +1,45 @@
 import { expect, test } from "bun:test"
+import os from "node:os"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { decide, type LocalService } from "../src/service-probe"
 
 const protocolError =
   "Background service uses an incompatible health protocol. Update this client or explicitly restart the service."
+
+test.each([
+  ["selected-state", "xdg-state", "selected-state"],
+  [undefined, "xdg-state", "xdg-state"],
+  ["", "xdg-state", "xdg-state"],
+  [undefined, undefined, path.join("home", ".local", "state")],
+  ["", "", path.join("home", ".local", "state")],
+] as const)("fallback resolves opencode state %p and XDG state %p", (opencode, xdg, expected) => {
+  const root = path.join(os.tmpdir(), "opencode-service-fallback")
+  const module = pathToFileURL(path.join(import.meta.dir, "../src/service-probe.ts")).href
+  const result = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "-e",
+      `const { fallback } = await import(${JSON.stringify(module)}); console.log(JSON.stringify(fallback()))`,
+    ],
+    env: {
+      ...process.env,
+      HOME: path.join(root, "home"),
+      USERPROFILE: path.join(root, "home"),
+      OPENCODE_DATA_HOME: undefined,
+      OPENCODE_CACHE_HOME: undefined,
+      OPENCODE_STATE_HOME: opencode ? path.join(root, opencode) : opencode,
+      XDG_DATA_HOME: undefined,
+      XDG_CACHE_HOME: undefined,
+      XDG_CONFIG_HOME: undefined,
+      XDG_STATE_HOME: xdg ? path.join(root, xdg) : xdg,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  expect(result.exitCode, result.stderr.toString()).toBe(0)
+  expect(JSON.parse(result.stdout.toString())).toBe(path.join(root, expected, "opencode", "service.json"))
+})
 
 function service(input: Pick<LocalService, "state" | "compatible" | "version">) {
   return {

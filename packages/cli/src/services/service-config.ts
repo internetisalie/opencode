@@ -131,12 +131,10 @@ const paths = Effect.gen(function* () {
   }
 })
 
-// Clients find the service at its registration under XDG_STATE_HOME. A saved value would move the
-// registration away from them, and children of the service (tool shells, a relaunched Desktop) would
-// look for it in the wrong place, so the service keeps the state directory it was launched with.
+// Keep the launch environment's state root for both registration and discovery.
 export function processEnv(env: Info["env"]) {
   if (env === undefined) return undefined
-  const { XDG_STATE_HOME: _state, ...rest } = env
+  const { XDG_STATE_HOME: _state, OPENCODE_STATE_HOME: _opencodeState, ...rest } = env
   return rest
 }
 
