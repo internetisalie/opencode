@@ -1,5 +1,5 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { roots } from "@opencode/util/global-roots"
 import type { DiscoverOptions, Endpoint, Info } from "./service.js"
 import { defaultEnsureTiming } from "./service-timing.js"
 import { matchesVersion } from "./service-version.js"
@@ -37,7 +37,7 @@ function fail(message: string) {
 
 /** The default registration file. */
 export function fallback() {
-  return join(process.env["XDG_STATE_HOME"] ?? join(homedir(), ".local", "state"), "opencode", "service.json")
+  return join(roots("opencode").state, "service.json")
 }
 
 /** Whether two registrations describe the same service instance. */

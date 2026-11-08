@@ -174,6 +174,7 @@
       "dependencies": {
         "@opencode/protocol": "workspace:*",
         "@opencode/schema": "workspace:*",
+        "@opencode/util": "workspace:*",
       },
       "devDependencies": {
         "@effect/platform-node": "catalog:",
