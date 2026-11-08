@@ -55,6 +55,62 @@ describe("global", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
+  test("explicit layerWith directories override opencode roots", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-global-explicit-roots-"))
+    const directories = {
+      home: path.join(root, "explicit", "home"),
+      data: path.join(root, "explicit", "data"),
+      cache: path.join(root, "explicit", "cache"),
+      config: path.join(root, "explicit", "config"),
+      state: path.join(root, "explicit", "state"),
+      tmp: path.join(root, "explicit", "tmp"),
+      bin: path.join(root, "explicit", "cache", "bin"),
+      log: path.join(root, "explicit", "data", "log"),
+      repos: path.join(root, "explicit", "data", "repos"),
+    }
+    const module = pathToFileURL(path.join(import.meta.dir, "../src/global.ts")).href
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "-e",
+        `
+          import { Context, Effect, Layer } from "effect"
+          const { Global } = await import(${JSON.stringify(module)})
+          const context = await Effect.runPromise(Effect.scoped(Layer.build(Global.layerWith(${JSON.stringify(directories)}))))
+          console.log(JSON.stringify(Context.get(context, Global.Service)))
+        `,
+      ],
+      cwd: path.join(import.meta.dir, ".."),
+      env: {
+        ...process.env,
+        // Bun's own transpiler cache would otherwise create the XDG cache directory.
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        HOME: path.join(root, "home"),
+        USERPROFILE: path.join(root, "home"),
+        OPENCODE_TEST_HOME: undefined,
+        OPENCODE_DATA_HOME: path.join(root, "selected-data"),
+        OPENCODE_CACHE_HOME: path.join(root, "selected-cache"),
+        OPENCODE_STATE_HOME: path.join(root, "selected-state"),
+        XDG_DATA_HOME: path.join(root, "xdg-data"),
+        XDG_CACHE_HOME: path.join(root, "xdg-cache"),
+        XDG_CONFIG_HOME: path.join(root, "xdg-config"),
+        XDG_STATE_HOME: path.join(root, "xdg-state"),
+        OPENCODE_CONFIG_DIR: path.join(root, "config-override"),
+        TMPDIR: path.join(root, "tmp"),
+        TEMP: path.join(root, "tmp"),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+
+    try {
+      expect(result.exitCode, result.stderr.toString()).toBe(0)
+      expect(JSON.parse(result.stdout.toString())).toEqual(directories)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("building a layer with default tmp creates and canonicalizes it", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-global-layer-"))
     const directories = ["data", "cache", "config", "state", "tmp"].map((directory) => path.join(root, directory))

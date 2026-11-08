@@ -2,7 +2,7 @@ import path from "path"
 import fs from "fs"
 import os from "os"
 import { Context, Effect, Layer } from "effect"
-// XDG on runtimes with a home directory; one tmp-rooted directory on workerd.
+// Data/state/cache prefer OPENCODE_*_HOME, then XDG, then the home default; workerd uses tmp-only roots.
 // The variants resolve through the `workerd` bundle condition, like the
 // native-module stubs, so no runtime sniffing happens here.
 import { roots } from "#global-roots"
