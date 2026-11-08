@@ -130,6 +130,8 @@ describe("global", () => {
       cwd: path.join(import.meta.dir, ".."),
       env: {
         ...process.env,
+        // Bun's own transpiler cache would otherwise create the XDG cache directory.
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
         HOME: path.join(root, "home"),
         USERPROFILE: path.join(root, "home"),
         OPENCODE_TEST_HOME: undefined,
