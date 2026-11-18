@@ -6,6 +6,8 @@ import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionStore } from "@opencode/core/session/store"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { isAllowedCorsOrigin } from "./cors"
+import { RequestSite } from "./request-site"
+import { withoutParentSpan } from "./request-tracing"
 import { createRoutes } from "./routes"
 import { forwardMirroredSession } from "./middleware/remote-session"
 import type { ServerOptions } from "./options"
@@ -41,9 +43,10 @@ export interface BootOptions {
  * next boot, and the sweep is a no-op when nothing is suspended.
  */
 export const make = Effect.fn("ServerFetch.make")(function* (options: ServerOptions = {}, boot: BootOptions = {}) {
+  // Handlers capture the build context; without the caller's span, each request is its own trace.
   const context = yield* Layer.build(
     createRoutes(options, () => [], boot.overrides ?? []).pipe(Layer.provide(HttpServer.layerServices)),
-  )
+  ).pipe(withoutParentSpan)
   // Forked so the returned handler is never delayed; resumed drains are already
   // logged and durably recorded by the execution layer.
   yield* Effect.forkDetach(Context.get(context, SessionRestart.Service).resumeSuspendedSessions)
@@ -52,6 +55,7 @@ export const make = Effect.fn("ServerFetch.make")(function* (options: ServerOpti
     .pipe(
       (app) =>
         forwardMirroredSession(app, options.remoteProxy, Context.get(context, SessionStore.Service), options.password),
+      RequestSite.middleware(options),
       HttpMiddleware.cors({ allowedOrigins: (origin) => isAllowedCorsOrigin(origin, options), maxAge: 86_400 }),
       HttpEffect.toWebHandlerWith(context),
     )

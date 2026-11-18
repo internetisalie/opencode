@@ -121,6 +121,10 @@ import type {
   ExperimentalGenerateTextOutput,
   ExperimentalGenerateImageInput,
   ExperimentalGenerateImageOutput,
+  ExperimentalGenerateVideoCreateInput,
+  ExperimentalGenerateVideoCreateOutput,
+  ExperimentalGenerateVideoGetInput,
+  ExperimentalGenerateVideoGetOutput,
   ExperimentalGenerateDecisionsInput,
   ExperimentalGenerateDecisionsOutput,
   ExperimentalVoiceModelsOutput,
@@ -251,18 +255,32 @@ import type {
   ExperimentalPersistentPtyRemoveOutput,
   ExperimentalPersistentPtyConnectTokenInput,
   ExperimentalPersistentPtyConnectTokenOutput,
-  ExperimentalScheduleCreateInput,
-  ExperimentalScheduleCreateOutput,
-  ExperimentalScheduleListInput,
-  ExperimentalScheduleListOutput,
-  ExperimentalScheduleGetInput,
-  ExperimentalScheduleGetOutput,
-  ExperimentalSchedulePauseInput,
-  ExperimentalSchedulePauseOutput,
-  ExperimentalScheduleResumeInput,
-  ExperimentalScheduleResumeOutput,
-  ExperimentalScheduleDeleteInput,
-  ExperimentalScheduleDeleteOutput,
+  ExperimentalAutomationCreateInput,
+  ExperimentalAutomationCreateOutput,
+  ExperimentalAutomationListInput,
+  ExperimentalAutomationListOutput,
+  ExperimentalAutomationGetInput,
+  ExperimentalAutomationGetOutput,
+  ExperimentalAutomationPauseInput,
+  ExperimentalAutomationPauseOutput,
+  ExperimentalAutomationResumeInput,
+  ExperimentalAutomationResumeOutput,
+  ExperimentalAutomationDeleteInput,
+  ExperimentalAutomationDeleteOutput,
+  ExperimentalArtifactsProvidersInput,
+  ExperimentalArtifactsProvidersOutput,
+  ExperimentalArtifactsListInput,
+  ExperimentalArtifactsListOutput,
+  ExperimentalArtifactsCreateInput,
+  ExperimentalArtifactsCreateOutput,
+  ExperimentalArtifactsGetInput,
+  ExperimentalArtifactsGetOutput,
+  ExperimentalArtifactsUpdateInput,
+  ExperimentalArtifactsUpdateOutput,
+  ExperimentalArtifactsDeleteInput,
+  ExperimentalArtifactsDeleteOutput,
+  ExperimentalJobListInput,
+  ExperimentalJobListOutput,
   ShellListInput,
   ShellListOutput,
   ShellCreateInput,
@@ -961,6 +979,36 @@ const EndpointExperimentalGenerateImage =
       ),
     )
 
+const EndpointExperimentalGenerateVideoCreate =
+  (raw: RawClient["server.generate"]) => (input: ExperimentalGenerateVideoCreateInput) =>
+    preserveEffect<ExperimentalGenerateVideoCreateOutput>()(
+      raw["generate.video.create"]({
+        payload: {
+          model: input["model"],
+          prompt: input["prompt"],
+          start: input["start"],
+          end: input["end"],
+          references: input["references"],
+          duration: input["duration"],
+          aspect: input["aspect"],
+          resolution: input["resolution"],
+          sound: input["sound"],
+        },
+      }).pipe(
+        Effect.mapError(mapClientError),
+        Effect.map((value) => value.data),
+      ),
+    )
+
+const EndpointExperimentalGenerateVideoGet =
+  (raw: RawClient["server.generate"]) => (input: ExperimentalGenerateVideoGetInput) =>
+    preserveEffect<ExperimentalGenerateVideoGetOutput>()(
+      raw["generate.video.get"]({ params: { id: input["id"] } }).pipe(
+        Effect.mapError(mapClientError),
+        Effect.map((value) => value.data),
+      ),
+    )
+
 const EndpointExperimentalGenerateDecisions =
   (raw: RawClient["server.generate"]) => (input: ExperimentalGenerateDecisionsInput) =>
     preserveEffect<ExperimentalGenerateDecisionsOutput>()(
@@ -975,6 +1023,7 @@ const EndpointExperimentalGenerateDecisions =
 const adaptGroupExperimentalGenerate = (raw: RawClient["server.generate"]) => ({
   text: EndpointExperimentalGenerateText(raw),
   image: EndpointExperimentalGenerateImage(raw),
+  video: { create: EndpointExperimentalGenerateVideoCreate(raw), get: EndpointExperimentalGenerateVideoGet(raw) },
   decisions: EndpointExperimentalGenerateDecisions(raw),
 })
 
@@ -1583,7 +1632,7 @@ const EndpointExperimentalPersistentPtyUpdate =
     preserveEffect<ExperimentalPersistentPtyUpdateOutput>()(
       raw["persistentPty.update"]({
         params: { ptyID: input["ptyID"] },
-        payload: { attachmentID: input["attachmentID"], size: input["size"] },
+        payload: { attachmentID: input["attachmentID"], size: input["size"], title: input["title"] },
       }).pipe(
         Effect.mapError(mapClientError),
         Effect.map((value) => value.data),
@@ -1617,18 +1666,17 @@ const EndpointExperimentalPersistentPtyConnectToken =
       ),
     )
 
-const EndpointExperimentalScheduleCreate =
-  (raw: RawClient["server.experimental"]) => (input: ExperimentalScheduleCreateInput) =>
-    preserveEffect<ExperimentalScheduleCreateOutput>()(
-      raw["schedule.create"]({
+const EndpointExperimentalAutomationCreate =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalAutomationCreateInput) =>
+    preserveEffect<ExperimentalAutomationCreateOutput>()(
+      raw["automation.create"]({
         payload: {
           sessionID: input["sessionID"],
+          directory: input["directory"],
           name: input["name"],
-          when: input["when"],
-          if: input["if"],
-          until: input["until"],
-          ends: input["ends"],
-          prompt: input["prompt"],
+          trigger: input["trigger"],
+          action: input["action"],
+          expires: input["expires"],
         },
       }).pipe(
         Effect.mapError(mapClientError),
@@ -1636,47 +1684,121 @@ const EndpointExperimentalScheduleCreate =
       ),
     )
 
-const EndpointExperimentalScheduleList =
-  (raw: RawClient["server.experimental"]) => (input: ExperimentalScheduleListInput) =>
-    preserveEffect<ExperimentalScheduleListOutput>()(
-      raw["schedule.list"]({ query: { sessionID: input["sessionID"] } }).pipe(
+const EndpointExperimentalAutomationList =
+  (raw: RawClient["server.experimental"]) => (input?: ExperimentalAutomationListInput) =>
+    preserveEffect<ExperimentalAutomationListOutput>()(
+      raw["automation.list"]({ query: { sessionID: input?.["sessionID"], directory: input?.["directory"] } }).pipe(
         Effect.mapError(mapClientError),
         Effect.map((value) => value.data),
       ),
     )
 
-const EndpointExperimentalScheduleGet =
-  (raw: RawClient["server.experimental"]) => (input: ExperimentalScheduleGetInput) =>
-    preserveEffect<ExperimentalScheduleGetOutput>()(
-      raw["schedule.get"]({ params: { scheduleID: input["scheduleID"] } }).pipe(
+const EndpointExperimentalAutomationGet =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalAutomationGetInput) =>
+    preserveEffect<ExperimentalAutomationGetOutput>()(
+      raw["automation.get"]({ params: { automationID: input["automationID"] } }).pipe(
         Effect.mapError(mapClientError),
         Effect.map((value) => value.data),
       ),
     )
 
-const EndpointExperimentalSchedulePause =
-  (raw: RawClient["server.experimental"]) => (input: ExperimentalSchedulePauseInput) =>
-    preserveEffect<ExperimentalSchedulePauseOutput>()(
-      raw["schedule.pause"]({ params: { scheduleID: input["scheduleID"] } }).pipe(
+const EndpointExperimentalAutomationPause =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalAutomationPauseInput) =>
+    preserveEffect<ExperimentalAutomationPauseOutput>()(
+      raw["automation.pause"]({ params: { automationID: input["automationID"] } }).pipe(
         Effect.mapError(mapClientError),
         Effect.map((value) => value.data),
       ),
     )
 
-const EndpointExperimentalScheduleResume =
-  (raw: RawClient["server.experimental"]) => (input: ExperimentalScheduleResumeInput) =>
-    preserveEffect<ExperimentalScheduleResumeOutput>()(
-      raw["schedule.resume"]({ params: { scheduleID: input["scheduleID"] } }).pipe(
+const EndpointExperimentalAutomationResume =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalAutomationResumeInput) =>
+    preserveEffect<ExperimentalAutomationResumeOutput>()(
+      raw["automation.resume"]({ params: { automationID: input["automationID"] } }).pipe(
         Effect.mapError(mapClientError),
         Effect.map((value) => value.data),
       ),
     )
 
-const EndpointExperimentalScheduleDelete =
-  (raw: RawClient["server.experimental"]) => (input: ExperimentalScheduleDeleteInput) =>
-    preserveEffect<ExperimentalScheduleDeleteOutput>()(
-      raw["schedule.delete"]({ params: { scheduleID: input["scheduleID"] } }).pipe(Effect.mapError(mapClientError)),
+const EndpointExperimentalAutomationDelete =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalAutomationDeleteInput) =>
+    preserveEffect<ExperimentalAutomationDeleteOutput>()(
+      raw["automation.delete"]({ params: { automationID: input["automationID"] } }).pipe(
+        Effect.mapError(mapClientError),
+      ),
     )
+
+const EndpointExperimentalArtifactsProviders =
+  (raw: RawClient["server.experimental"]) => (input?: ExperimentalArtifactsProvidersInput) =>
+    preserveEffect<ExperimentalArtifactsProvidersOutput>()(
+      raw["artifacts.providers"]({ query: { location: input?.["location"] } }).pipe(Effect.mapError(mapClientError)),
+    )
+
+const EndpointExperimentalArtifactsList =
+  (raw: RawClient["server.experimental"]) => (input?: ExperimentalArtifactsListInput) =>
+    preserveEffect<ExperimentalArtifactsListOutput>()(
+      raw["artifacts.list"]({
+        query: { location: input?.["location"], sessionID: input?.["sessionID"], provider: input?.["provider"] },
+      }).pipe(Effect.mapError(mapClientError)),
+    )
+
+const EndpointExperimentalArtifactsCreate =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalArtifactsCreateInput) =>
+    preserveEffect<ExperimentalArtifactsCreateOutput>()(
+      raw["artifacts.create"]({
+        query: { location: input["location"] },
+        payload: {
+          title: input["title"],
+          files: input["files"],
+          entry: input["entry"],
+          provider: input["provider"],
+          sessionID: input["sessionID"],
+        },
+      }).pipe(Effect.mapError(mapClientError)),
+    )
+
+const EndpointExperimentalArtifactsGet =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalArtifactsGetInput) =>
+    preserveEffect<ExperimentalArtifactsGetOutput>()(
+      raw["artifacts.get"]({
+        params: { artifactID: input["artifactID"] },
+        query: { location: input["location"] },
+      }).pipe(Effect.mapError(mapClientError)),
+    )
+
+const EndpointExperimentalArtifactsUpdate =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalArtifactsUpdateInput) =>
+    preserveEffect<ExperimentalArtifactsUpdateOutput>()(
+      raw["artifacts.update"]({
+        params: { artifactID: input["artifactID"] },
+        query: { location: input["location"] },
+        payload: { title: input["title"], files: input["files"], entry: input["entry"], sessionID: input["sessionID"] },
+      }).pipe(Effect.mapError(mapClientError)),
+    )
+
+const EndpointExperimentalArtifactsDelete =
+  (raw: RawClient["server.experimental"]) => (input: ExperimentalArtifactsDeleteInput) =>
+    preserveEffect<ExperimentalArtifactsDeleteOutput>()(
+      raw["artifacts.delete"]({
+        params: { artifactID: input["artifactID"] },
+        query: { location: input["location"] },
+      }).pipe(Effect.mapError(mapClientError)),
+    )
+
+const EndpointExperimentalJobList = (raw: RawClient["server.experimental"]) => (input?: ExperimentalJobListInput) =>
+  preserveEffect<ExperimentalJobListOutput>()(
+    raw["job.list"]({
+      query: {
+        sessionID: input?.["sessionID"],
+        kind: input?.["kind"],
+        status: input?.["status"],
+        descendants: input?.["descendants"],
+      },
+    }).pipe(
+      Effect.mapError(mapClientError),
+      Effect.map((value) => value.data),
+    ),
+  )
 
 const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
   persistentPty: {
@@ -1691,14 +1813,23 @@ const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
     remove: EndpointExperimentalPersistentPtyRemove(raw),
     connectToken: EndpointExperimentalPersistentPtyConnectToken(raw),
   },
-  schedule: {
-    create: EndpointExperimentalScheduleCreate(raw),
-    list: EndpointExperimentalScheduleList(raw),
-    get: EndpointExperimentalScheduleGet(raw),
-    pause: EndpointExperimentalSchedulePause(raw),
-    resume: EndpointExperimentalScheduleResume(raw),
-    delete: EndpointExperimentalScheduleDelete(raw),
+  automation: {
+    create: EndpointExperimentalAutomationCreate(raw),
+    list: EndpointExperimentalAutomationList(raw),
+    get: EndpointExperimentalAutomationGet(raw),
+    pause: EndpointExperimentalAutomationPause(raw),
+    resume: EndpointExperimentalAutomationResume(raw),
+    delete: EndpointExperimentalAutomationDelete(raw),
   },
+  artifacts: {
+    providers: EndpointExperimentalArtifactsProviders(raw),
+    list: EndpointExperimentalArtifactsList(raw),
+    create: EndpointExperimentalArtifactsCreate(raw),
+    get: EndpointExperimentalArtifactsGet(raw),
+    update: EndpointExperimentalArtifactsUpdate(raw),
+    delete: EndpointExperimentalArtifactsDelete(raw),
+  },
+  job: { list: EndpointExperimentalJobList(raw) },
 })
 
 const EndpointShellList = (raw: RawClient["server.shell"]) => (input?: ShellListInput) =>
