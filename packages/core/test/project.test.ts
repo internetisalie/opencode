@@ -334,10 +334,7 @@ async function rootCommit(dir: string) {
 describe("Project.resolve", () => {
   it.live("uses exact explicit associations without changing the owning Git project's metadata", () =>
     Effect.gen(function* () {
-      const tmp = yield* Effect.acquireRelease(
-        Effect.promise(() => tmpdir()),
-        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
-      )
+      const tmp = yield* tmpdirScoped()
       const checkout = path.join(tmp.path, "checkout")
       const workspace = path.join(tmp.path, "workspace")
       const nested = path.join(workspace, "nested")
