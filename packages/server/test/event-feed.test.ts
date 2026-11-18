@@ -94,68 +94,6 @@ describe("EventFeed", () => {
     }),
   )
 
-  it.effect("applies the same type filters to forwarded and local events before consuming capacity", () =>
-    Effect.gen(function* () {
-      const source = makeSource()
-      const feed = yield* EventFeed.make(source.observe, { capacity: 4, encode: (event) => event.id })
-      const agent = yield* feed.subscribe([Agent.Event.Updated.type])
-      const credential = yield* feed.subscribe([Credential.Event.Switched.type])
-      const all = yield* feed.subscribe()
-      const empty = yield* feed.subscribe([])
-      const switched: Event.Payload<typeof Credential.Event.Switched> = {
-        id: Event.ID.make("evt_remote_credential"),
-        created: 100,
-        type: Credential.Event.Switched.type,
-        data: {
-          credentialID: Credential.ID.make("cred_test"),
-          integrationID: IntegrationID.make("openai"),
-        },
-      }
-
-      yield* feed.forward(event("remote_agent"))
-      yield* source.publish(event("local_agent"))
-      yield* feed.forward(switched)
-      yield* source.publish({ ...switched, id: Event.ID.make("evt_local_credential") })
-
-      expect(Array.from(yield* agent.pipe(Stream.take(2), Stream.runCollect))).toEqual([
-        "evt_remote_agent",
-        "evt_local_agent",
-      ])
-      expect(Array.from(yield* credential.pipe(Stream.take(2), Stream.runCollect))).toEqual([
-        "evt_remote_credential",
-        "evt_local_credential",
-      ])
-      for (const stream of [all, empty]) {
-        expect(Array.from(yield* stream.pipe(Stream.take(4), Stream.runCollect))).toEqual([
-          "evt_remote_agent",
-          "evt_local_agent",
-          "evt_remote_credential",
-          "evt_local_credential",
-        ])
-      }
-    }),
-  )
-
-  it.effect("does not overflow a filtered subscriber with ignored forwarded events", () =>
-    Effect.gen(function* () {
-      const source = makeSource()
-      const feed = yield* EventFeed.make(source.observe, { capacity: 1, encode: (event) => event.id })
-      const stream = yield* feed.subscribe([Credential.Event.Switched.type])
-      yield* feed.forward(event("ignored_one"))
-      yield* feed.forward(event("ignored_two"))
-      yield* feed.forward({
-        id: Event.ID.make("evt_remote_match"),
-        created: 100,
-        type: Credential.Event.Switched.type,
-        data: {
-          credentialID: Credential.ID.make("cred_test"),
-          integrationID: IntegrationID.make("openai"),
-        },
-      })
-      expect(Array.from(yield* stream.pipe(Stream.take(1), Stream.runCollect))).toEqual(["evt_remote_match"])
-    }),
-  )
-
   it.effect("fails only the subscriber that exceeds its lag capacity", () =>
     Effect.gen(function* () {
       const source = makeSource()

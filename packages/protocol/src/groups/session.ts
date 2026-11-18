@@ -39,7 +39,6 @@ import { EventLog } from "@opencode/schema/event-log"
 import { FileDiff } from "@opencode/schema/file-diff"
 import { Form } from "@opencode/schema/form"
 import { PublicSessionMessage } from "./message.js"
-import { SessionOwnership } from "../middleware/session-ownership.js"
 
 const SessionActive = Schema.Struct({
   type: Schema.Literal("running"),
@@ -205,24 +204,6 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           summary: "Import session",
           description:
             "Import a projected session transcript at the requested location. Accepts transcripts exported by earlier releases. If parentID is supplied, the parent session must already exist; import parents before children.",
-        }),
-      ),
-    )
-    .add(
-      HttpApiEndpoint.post("session.mirror", "/api/experimental/session/mirror", {
-        payload: Schema.Struct({
-          ...PublicSessionTransfer.fields,
-          source: Schema.NonEmptyString,
-          location: Location.PublicRef.pipe(Schema.optional),
-        }),
-        success: Schema.Struct({ data: PublicSessionInfo }),
-        error: [ConflictError, SessionNotFoundError],
-      }).annotateMerge(
-        OpenApi.annotations({
-          identifier: "experimental.session.mirror",
-          summary: "Mirror a leaf-owned session",
-          description:
-            "Idempotently ingest a settled session transcript from a stable external source. Existing local sessions and divergent transcripts are rejected.",
         }),
       ),
     )
@@ -846,7 +827,6 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         }),
       ),
     )
-    .middleware(SessionOwnership)
     .annotateMerge(
       OpenApi.annotations({
         title: "session",

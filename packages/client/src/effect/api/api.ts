@@ -457,9 +457,6 @@ export interface SessionApi<E = never> {
   /** @deprecated Use `client.experimental.session.import`. Removed in the next minor. */
   readonly import: ExperimentalSessionImportOperation<E>
 
-  /** @deprecated Use `client.experimental.session.mirror`. Removed in the next minor. */
-  readonly mirror: ExperimentalSessionMirrorOperation<E>
-
   /** @deprecated Use `client.experimental.session.export`. Removed in the next minor. */
   readonly export: ExperimentalSessionExportOperation<E>
 
@@ -564,17 +561,6 @@ export type ExperimentalSessionImportOutput = Session.Info
 export type ExperimentalSessionImportOperation<E = never> = (
   input: ExperimentalSessionImportInput,
 ) => Effect.Effect<ExperimentalSessionImportOutput, E>
-
-export type ExperimentalSessionMirrorInput = {
-  readonly info: Session.Info
-  readonly messages: ReadonlyArray<SessionMessage.Info>
-  readonly source: string
-  readonly location?: Location.PublicRef | undefined
-}
-export type ExperimentalSessionMirrorOutput = Session.Info
-export type ExperimentalSessionMirrorOperation<E = never> = (
-  input: ExperimentalSessionMirrorInput,
-) => Effect.Effect<ExperimentalSessionMirrorOutput, E>
 
 export type ExperimentalSessionExportInput = { readonly sessionID: Session.ID; readonly sanitize?: boolean | undefined }
 export type ExperimentalSessionExportOutput = {
@@ -1457,7 +1443,6 @@ export type ExperimentalSessionLogOperation<E = never> = (
 export interface ExperimentalSessionApi<E = never> {
   readonly stats: ExperimentalSessionStatsOperation<E>
   readonly import: ExperimentalSessionImportOperation<E>
-  readonly mirror: ExperimentalSessionMirrorOperation<E>
   readonly export: ExperimentalSessionExportOperation<E>
   readonly skill: ExperimentalSessionSkillOperation<E>
   readonly wait: ExperimentalSessionWaitOperation<E>
@@ -2153,7 +2138,6 @@ export type EventSubscribeInput = {
         | "session.archived"
         | "session.unarchived"
         | "session.usage.updated"
-        | "session.mirror.updated"
         | "session.deleted"
         | "session.forked"
         | "session.inbox.delivered"
@@ -2903,15 +2887,6 @@ export type SessionImportOutput = ExperimentalSessionImportOutput
 
 /** @deprecated Use `ExperimentalSessionImportOperation`. Removed in the next minor. */
 export type SessionImportOperation<E = never> = ExperimentalSessionImportOperation<E>
-
-/** @deprecated Use `ExperimentalSessionMirrorInput`. Removed in the next minor. */
-export type SessionMirrorInput = ExperimentalSessionMirrorInput
-
-/** @deprecated Use `ExperimentalSessionMirrorOutput`. Removed in the next minor. */
-export type SessionMirrorOutput = ExperimentalSessionMirrorOutput
-
-/** @deprecated Use `ExperimentalSessionMirrorOperation`. Removed in the next minor. */
-export type SessionMirrorOperation<E = never> = ExperimentalSessionMirrorOperation<E>
 
 /** @deprecated Use `ExperimentalSessionExportInput`. Removed in the next minor. */
 export type SessionExportInput = ExperimentalSessionExportInput

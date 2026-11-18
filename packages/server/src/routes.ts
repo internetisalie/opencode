@@ -21,7 +21,6 @@ import { Worktree } from "@opencode/core/worktree"
 import { Session } from "@opencode/core/session"
 import { Instance } from "@opencode/core/instance/service"
 import { SessionTransfer } from "@opencode/core/session/transfer"
-import { SessionStore } from "@opencode/core/session/store"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { Shell } from "@opencode/core/shell"
@@ -55,11 +54,9 @@ import { ServerPairing } from "./pairing"
 import { layer } from "./location"
 import { formLocationLayer } from "./middleware/form-location"
 import { sessionLocationLayer } from "./middleware/session-location"
-import { sessionOwnershipLayer } from "./middleware/session-ownership"
 import { ServerInfo } from "./server-info"
 import { pluginRoutes } from "./plugin-routes"
 import type { ServerOptions } from "./options"
-import { RemoteEventConfig } from "./remote-events"
 
 const applicationServiceNodes = [
   App.node,
@@ -80,7 +77,6 @@ const applicationServiceNodes = [
   Project.sweepNode,
   Worktree.node,
   Session.node,
-  SessionStore.node,
   Instance.node,
   SessionTransfer.node,
   InstructionEntry.node,
@@ -218,16 +214,9 @@ function makeRoutes<AuthError, AuthServices>(
         ServerInfo.layer(serviceURLs, Context.get(context, Global.Service).tmp, options.app),
       )
       const api = HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
-        Layer.provide(
-          handlers.pipe(
-            Layer.provide(services),
-            Layer.provide(Layer.succeed(CorsConfig, options)),
-            Layer.provide(Layer.succeed(RemoteEventConfig, options.remoteProxy)),
-          ),
-        ),
+        Layer.provide(handlers.pipe(Layer.provide(services), Layer.provide(Layer.succeed(CorsConfig, options)))),
         Layer.provide(formLocationLayer),
         Layer.provide(sessionLocationLayer),
-        Layer.provide(sessionOwnershipLayer),
         Layer.provide(layer),
         Layer.provide(authorizationLayer),
         Layer.provide(schemaErrorLayer),

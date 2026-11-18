@@ -73,7 +73,6 @@ test("exposes every standard HTTP API group", () => {
   expect(Object.keys(client.experimental.session)).toEqual([
     "stats",
     "import",
-    "mirror",
     "export",
     "skill",
     "wait",
@@ -164,7 +163,6 @@ test("nests a method under client.experimental exactly when its route is experim
     "session.instructions.entry.put",
     "session.instructions.entry.remove",
     "session.log",
-    "session.mirror",
     "session.skill",
     "session.stats",
     "session.wait",

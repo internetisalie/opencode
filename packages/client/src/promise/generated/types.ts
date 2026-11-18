@@ -1784,15 +1784,6 @@ export type SessionUsageUpdated = {
   data: { sessionID: SessionID; cost: MoneyUSD; tokens: TokenUsageInfo }
 }
 
-export type SessionMirrorUpdated = {
-  id: EventID
-  created: number
-  metadata?: { [x: string]: any }
-  type: "session.mirror.updated"
-  location?: LocationRef
-  data: { sessionID: SessionID }
-}
-
 export type SessionTextDelta = {
   id: EventID
   created: number
@@ -2962,7 +2953,6 @@ export type V2Event =
   | SessionArchived
   | SessionUnarchived
   | SessionUsageUpdated
-  | SessionMirrorUpdated
   | SessionDeleted
   | SessionForked
   | SessionInboxDelivered
@@ -3096,14 +3086,6 @@ export type InvalidCursorError = { readonly _tag: "InvalidCursorError"; readonly
 export const isInvalidCursorError = (value: unknown): value is InvalidCursorError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "InvalidCursorError"
 
-export type ConflictError = {
-  readonly _tag: "ConflictError"
-  readonly message: string
-  readonly resource?: string | undefined
-}
-export const isConflictError = (value: unknown): value is ConflictError =>
-  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
-
 export type SessionNotFoundError = {
   readonly _tag: "SessionNotFoundError"
   readonly sessionID: string
@@ -3120,6 +3102,14 @@ export type MessageNotFoundError = {
 }
 export const isMessageNotFoundError = (value: unknown): value is MessageNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "MessageNotFoundError"
+
+export type ConflictError = {
+  readonly _tag: "ConflictError"
+  readonly message: string
+  readonly resource?: string | undefined
+}
+export const isConflictError = (value: unknown): value is ConflictError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ConflictError"
 
 export type CommandNotFoundError = {
   readonly _tag: "CommandNotFoundError"
@@ -3973,345 +3963,6 @@ export type ExperimentalSessionImportInput = {
 
 export type ExperimentalSessionImportOutput = { data: SessionInfo }["data"]
 
-export type ExperimentalSessionMirrorInput = {
-  readonly info: {
-    readonly id: string
-    readonly parentID?: string
-    readonly fork?: {
-      readonly sessionID: string
-      readonly boundary:
-        | { readonly type: "before"; readonly messageID: string }
-        | { readonly type: "through"; readonly messageID: string }
-    }
-    readonly projectID: string
-    readonly agent?: string
-    readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
-    readonly cost: number
-    readonly tokens: {
-      readonly input: number
-      readonly output: number
-      readonly reasoning: number
-      readonly cache: { readonly read: number; readonly write: number }
-    }
-    readonly outcome?: "succeeded" | "failed" | "interrupted"
-    readonly time: {
-      readonly created: number
-      readonly updated: number
-      readonly busy?: number
-      readonly idle?: number
-      readonly viewed?: number
-      readonly archived?: number
-    }
-    readonly title?: string
-    readonly subpath?: string
-    readonly metadata?: { readonly [x: string]: JsonValue }
-    readonly permissions?: ReadonlyArray<{
-      readonly action: string
-      readonly resource: string
-      readonly effect: "allow" | "deny" | "ask"
-    }>
-    readonly revert?: {
-      readonly messageID: string
-      readonly partID?: string
-      readonly snapshot?: string
-      readonly files?: ReadonlyArray<{
-        readonly file: string
-        readonly patch: string
-        readonly additions: number
-        readonly deletions: number
-        readonly status: "added" | "deleted" | "modified"
-        readonly more?: true
-      }>
-    }
-    readonly location: { readonly directory: string }
-  }
-  readonly messages: ReadonlyArray<
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly type: "agent-switched"
-        readonly agent: string
-        readonly previous?: string
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly type: "model-switched"
-        readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
-        readonly previous?: { readonly id: string; readonly providerID: string; readonly variant?: string }
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly type: "location-switched"
-        readonly projectID?: string
-        readonly subpath?: string
-        readonly location: { readonly directory: string }
-        readonly previous?: {
-          readonly location: { readonly directory: string }
-          readonly projectID?: string
-          readonly subpath?: string
-        } | null
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly text: string
-        readonly files?: ReadonlyArray<{
-          readonly data: string
-          readonly mime: string
-          readonly source: { readonly type: "inline" } | { readonly type: "uri"; readonly uri: string }
-          readonly name?: string
-          readonly description?: string
-          readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
-        }>
-        readonly agents?: ReadonlyArray<{
-          readonly name: string
-          readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
-        }>
-        readonly skills?: ReadonlyArray<{
-          readonly id: string
-          readonly name: string
-          readonly text?: string
-          readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
-        }>
-        readonly type: "user"
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly text: string
-        readonly description?: string
-        readonly type: "synthetic"
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly type: "system"
-        readonly text: string
-        readonly description?: string
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly type: "skill"
-        readonly skill: string
-        readonly name: string
-        readonly text: string
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number; readonly completed?: number }
-        readonly type: "shell"
-        readonly shellID: string
-        readonly command: string
-        readonly status: "running" | "exited" | "timeout" | "killed"
-        readonly exit?: number | "Infinity" | "-Infinity" | "NaN"
-        readonly output?: {
-          readonly output: string
-          readonly cursor: number
-          readonly size: number
-          readonly truncated: boolean
-        }
-      }
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number; readonly streamed?: number; readonly completed?: number }
-        readonly type: "assistant"
-        readonly agent: string
-        readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
-        readonly content: ReadonlyArray<
-          | { readonly type: "text"; readonly text: string; readonly native?: { readonly [x: string]: JsonValue } }
-          | {
-              readonly type: "reasoning"
-              readonly text: string
-              readonly native?: { readonly [x: string]: JsonValue }
-              readonly time?: { readonly created: number; readonly completed?: number }
-            }
-          | {
-              readonly type: "tool"
-              readonly id: string
-              readonly name: string
-              readonly executed?: boolean
-              readonly native?: { readonly [x: string]: JsonValue }
-              readonly state:
-                | { readonly status: "streaming"; readonly input: string }
-                | {
-                    readonly status: "running"
-                    readonly input: { readonly [x: string]: JsonValue }
-                    readonly metadata: { readonly [x: string]: JsonValue }
-                  }
-                | {
-                    readonly status: "completed"
-                    readonly input: { readonly [x: string]: JsonValue }
-                    readonly content: readonly [
-                      (
-                        | { readonly type: "text"; readonly text: string }
-                        | {
-                            readonly type: "file"
-                            readonly uri: string
-                            readonly mime: string
-                            readonly name?: string | null
-                          }
-                      ),
-                      ...Array<
-                        | { readonly type: "text"; readonly text: string }
-                        | {
-                            readonly type: "file"
-                            readonly uri: string
-                            readonly mime: string
-                            readonly name?: string | null
-                          }
-                      >,
-                    ]
-                    readonly metadata?: { readonly [x: string]: JsonValue }
-                  }
-                | {
-                    readonly status: "error"
-                    readonly input: { readonly [x: string]: JsonValue }
-                    readonly error: {
-                      readonly type: string
-                      readonly message: string
-                      readonly status?: number
-                      readonly response?: { readonly body: string }
-                      readonly retryAfterMs?: number
-                    }
-                    readonly content?: readonly [
-                      (
-                        | { readonly type: "text"; readonly text: string }
-                        | {
-                            readonly type: "file"
-                            readonly uri: string
-                            readonly mime: string
-                            readonly name?: string | null
-                          }
-                      ),
-                      ...Array<
-                        | { readonly type: "text"; readonly text: string }
-                        | {
-                            readonly type: "file"
-                            readonly uri: string
-                            readonly mime: string
-                            readonly name?: string | null
-                          }
-                      >,
-                    ]
-                    readonly metadata?: { readonly [x: string]: JsonValue }
-                  }
-              readonly time: { readonly created: number; readonly ran?: number; readonly completed?: number }
-            }
-        >
-        readonly snapshot?: { readonly start?: string; readonly end?: string; readonly files?: ReadonlyArray<string> }
-        readonly finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
-        readonly rawFinish?: string
-        readonly native?: { readonly [x: string]: JsonValue }
-        readonly cost?: number
-        readonly tokens?: {
-          readonly input: number
-          readonly output: number
-          readonly reasoning: number
-          readonly cache: { readonly read: number; readonly write: number }
-        }
-        readonly error?: {
-          readonly type: string
-          readonly message: string
-          readonly status?: number
-          readonly response?: { readonly body: string }
-          readonly retryAfterMs?: number
-        }
-        readonly retry?: {
-          readonly attempt: number
-          readonly at: number
-          readonly error: {
-            readonly type: string
-            readonly message: string
-            readonly status?: number
-            readonly response?: { readonly body: string }
-            readonly retryAfterMs?: number
-          }
-        }
-      }
-    | (
-        | {
-            readonly type: "compaction"
-            readonly id: string
-            readonly metadata?: { readonly [x: string]: JsonValue }
-            readonly time: { readonly created: number }
-            readonly status: "running"
-            readonly reason: "auto" | "manual"
-            readonly summary: string
-          }
-        | {
-            readonly type: "compaction"
-            readonly id: string
-            readonly metadata?: { readonly [x: string]: JsonValue }
-            readonly time: { readonly created: number }
-            readonly status: "completed"
-            readonly reason: "auto" | "manual"
-            readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
-            readonly native?: { readonly [x: string]: JsonValue }
-            readonly summary: string
-            readonly cost?: number
-            readonly tokens?: {
-              readonly input: number
-              readonly output: number
-              readonly reasoning: number
-              readonly cache: { readonly read: number; readonly write: number }
-            }
-          }
-        | {
-            readonly type: "compaction"
-            readonly id: string
-            readonly metadata?: { readonly [x: string]: JsonValue }
-            readonly time: { readonly created: number }
-            readonly status: "failed"
-            readonly reason: "auto" | "manual"
-            readonly error: {
-              readonly type: string
-              readonly message: string
-              readonly status?: number
-              readonly response?: { readonly body: string }
-              readonly retryAfterMs?: number
-            }
-            readonly cost?: number
-            readonly tokens?: {
-              readonly input: number
-              readonly output: number
-              readonly reasoning: number
-              readonly cache: { readonly read: number; readonly write: number }
-            }
-          }
-      )
-    | {
-        readonly id: string
-        readonly metadata?: { readonly [x: string]: JsonValue }
-        readonly time: { readonly created: number }
-        readonly type: "idle"
-        readonly outcome: "succeeded" | "failed" | "interrupted"
-        readonly error?: {
-          readonly type: string
-          readonly message: string
-          readonly status?: number
-          readonly response?: { readonly body: string }
-          readonly retryAfterMs?: number
-        }
-      }
-  >
-  readonly source: string
-  readonly location?: { readonly directory: string } | null | undefined
-}
-
-export type ExperimentalSessionMirrorOutput = { data: SessionInfo }["data"]
-
 export type ExperimentalSessionExportInput = { readonly sessionID: string; readonly sanitize?: boolean | undefined }
 
 export type ExperimentalSessionExportOutput = { data: SessionTransferData }["data"]
@@ -4853,7 +4504,6 @@ export type EventSubscribeInput = {
         | "session.archived"
         | "session.unarchived"
         | "session.usage.updated"
-        | "session.mirror.updated"
         | "session.deleted"
         | "session.forked"
         | "session.inbox.delivered"
@@ -5328,12 +4978,6 @@ export type SessionImportInput = ExperimentalSessionImportInput
 
 /** @deprecated Use `ExperimentalSessionImportOutput`. Removed in the next minor. */
 export type SessionImportOutput = ExperimentalSessionImportOutput
-
-/** @deprecated Use `ExperimentalSessionMirrorInput`. Removed in the next minor. */
-export type SessionMirrorInput = ExperimentalSessionMirrorInput
-
-/** @deprecated Use `ExperimentalSessionMirrorOutput`. Removed in the next minor. */
-export type SessionMirrorOutput = ExperimentalSessionMirrorOutput
 
 /** @deprecated Use `ExperimentalSessionExportInput`. Removed in the next minor. */
 export type SessionExportInput = ExperimentalSessionExportInput

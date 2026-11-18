@@ -62,9 +62,7 @@ jobs:
           for test in \
             test/project-directory.test.ts \
             test/plugin-routes.test.ts \
-            test/session-import.test.ts \
-            test/session-mirror-event.test.ts \
-            test/session-remote.test.ts; do
+            test/session-import.test.ts; do
             bun test "$test"
           done
 

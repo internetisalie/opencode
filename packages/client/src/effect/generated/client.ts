@@ -95,8 +95,6 @@ import type {
   ExperimentalSessionStatsOutput,
   ExperimentalSessionImportInput,
   ExperimentalSessionImportOutput,
-  ExperimentalSessionMirrorInput,
-  ExperimentalSessionMirrorOutput,
   ExperimentalSessionExportInput,
   ExperimentalSessionExportOutput,
   ExperimentalSessionSkillInput,
@@ -831,22 +829,6 @@ const EndpointExperimentalSessionImport =
       ),
     )
 
-const EndpointExperimentalSessionMirror =
-  (raw: RawClient["server.session"]) => (input: ExperimentalSessionMirrorInput) =>
-    preserveEffect<ExperimentalSessionMirrorOutput>()(
-      raw["session.mirror"]({
-        payload: {
-          info: input["info"],
-          messages: input["messages"],
-          source: input["source"],
-          location: input["location"],
-        },
-      }).pipe(
-        Effect.mapError(mapClientError),
-        Effect.map((value) => value.data),
-      ),
-    )
-
 const EndpointExperimentalSessionExport =
   (raw: RawClient["server.session"]) => (input: ExperimentalSessionExportInput) =>
     preserveEffect<ExperimentalSessionExportOutput>()(
@@ -911,7 +893,6 @@ const EndpointExperimentalSessionLog = (raw: RawClient["server.session"]) => (in
 const adaptGroupExperimentalSession = (raw: RawClient["server.session"]) => ({
   stats: EndpointExperimentalSessionStats(raw),
   import: EndpointExperimentalSessionImport(raw),
-  mirror: EndpointExperimentalSessionMirror(raw),
   export: EndpointExperimentalSessionExport(raw),
   skill: EndpointExperimentalSessionSkill(raw),
   wait: EndpointExperimentalSessionWait(raw),
@@ -2096,8 +2077,6 @@ const adaptClient = (raw: RawClient) => {
       stats: client.experimental.session.stats,
       /** @deprecated Use `client.experimental.session.import`. Removed in the next minor. */
       import: client.experimental.session.import,
-      /** @deprecated Use `client.experimental.session.mirror`. Removed in the next minor. */
-      mirror: client.experimental.session.mirror,
       /** @deprecated Use `client.experimental.session.export`. Removed in the next minor. */
       export: client.experimental.session.export,
       /** @deprecated Use `client.experimental.session.skill`. Removed in the next minor. */

@@ -179,12 +179,6 @@ export const UsageUpdated = Event.ephemeral({
 })
 export type UsageUpdated = typeof UsageUpdated.Type
 
-export const MirrorUpdated = Event.ephemeral({
-  type: "session.mirror.updated",
-  schema: Base,
-})
-export type MirrorUpdated = typeof MirrorUpdated.Type
-
 export const Deleted = Event.durable({
   type: "session.deleted",
   durable: {
@@ -680,7 +674,6 @@ export const Definitions = Event.inventory(
   Archived,
   Unarchived,
   UsageUpdated,
-  MirrorUpdated,
   Deleted,
   Forked,
   InboxDelivered,

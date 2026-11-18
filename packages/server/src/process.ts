@@ -3,7 +3,6 @@ export * as ServerProcess from "./process"
 import { NodeHttpServer } from "@effect/platform-node"
 import { Bus } from "@opencode/core/bus"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
-import { SessionStore } from "@opencode/core/session/store"
 import { Automation } from "@opencode/core/automation"
 import { InstallationEvent } from "@opencode/schema/installation-event"
 import { hasPtyConnectTicketURL } from "@opencode/protocol/groups/pty"
@@ -21,7 +20,6 @@ import { authorizedRequest, unauthorizedResponse } from "./middleware/authorizat
 import { withoutParentSpan } from "./request-tracing"
 import { RequestSite } from "./request-site"
 import { createRoutes } from "./routes"
-import { forwardMirroredSession } from "./middleware/remote-session"
 import { ServerInfo } from "./server-info"
 import { Status } from "./service-status"
 import type { ServerOptions } from "./options"
@@ -119,17 +117,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
     }
     // Automations run from any server process (`service`, `opencode serve`, or `--standalone`); the table holds all their state.
     yield* Effect.forkIn(Context.get(context, Automation.Service).run, applicationScope)
-    yield* Ref.set(
-      application,
-      Option.some(
-        forwardMirroredSession(
-          Context.get(context, HttpRouter.HttpRouter).asHttpEffect(),
-          options.remoteProxy,
-          Context.get(context, SessionStore.Service),
-          password,
-        ),
-      ),
-    )
+    yield* Ref.set(application, Option.some(Context.get(context, HttpRouter.HttpRouter).asHttpEffect()))
     yield* status.ready
     const bus = Context.get(context, Bus.Service)
     return {
