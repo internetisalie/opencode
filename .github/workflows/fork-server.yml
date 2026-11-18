@@ -112,7 +112,7 @@ jobs:
           mkdir -p "$suite"/{d,c,f,s,r,t,h,o}
           trap cleanup EXIT
           test -x "$native"
-          test "$(sha256sum "$native")" = "375334d9e20ffd7f7cd111eaaed7802d87ce13c9c15608ec42942b2b5da2e1b7  $native"
+          test "$(sha256sum "$native")" = "3a781ac5ff8bc189d229149f73a9555c82d4bc8a27c7642240859411cc5f0049  $native"
           cd "$GITHUB_WORKSPACE/packages/server"
           timeout --signal=TERM --kill-after=5s 180s bun test test/persistent-pty.test.ts test/passive-pty-observation.test.ts
 
@@ -140,6 +140,25 @@ jobs:
           path: packages/cli/dist/cli-linux-x64-baseline-musl
           if-no-files-found: error
           retention-days: 1
+
+      - name: Export system-test candidate
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          tag="opencode-fork-server:sha-${GITHUB_SHA:0:12}"
+          docker tag opencode-fork-server:smoke "$tag"
+          cd "$RUNNER_TEMP"
+          docker save "$tag" | gzip -1 > opencode-server.tar.gz
+          sha256sum opencode-server.tar.gz > opencode-server.tar.gz.sha256
+
+      - name: Upload system-test image
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: opencode-server-linux-amd64-${{ github.sha }}
+          path: ${{ runner.temp }}/opencode-server.tar.gz*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
 
   publish-image:
     if: github.repository == 'internetisalie/opencode' && github.event_name == 'push'
