@@ -7,6 +7,7 @@ import { Database } from "../database/database.js"
 import { Job } from "../job.js"
 import { Instance } from "../instance/service.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
+import { StepDeclinedError } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionInbox } from "./inbox.js"
 import { SubagentReport } from "./execution/subagent-report.js"
@@ -50,8 +51,11 @@ type InterruptReason = "user" | "shutdown"
 export function terminal(exit: Exit.Exit<void, SessionRunner.RunError>, reason?: InterruptReason) {
   if (Exit.isSuccess(exit)) return { type: "succeeded" as const }
   if (Cause.hasInterrupts(exit.cause)) return { type: "interrupted" as const, reason: reason ?? "shutdown" }
+  if (isDecline(exit.cause)) return { type: "interrupted" as const, reason: reason ?? "user" }
   return { type: "failed" as const, error: toSessionError(Cause.squash(exit.cause)) }
 }
+
+const isDecline = (cause: Cause.Cause<SessionRunner.RunError>) => Cause.squash(cause) instanceof StepDeclinedError
 
 /** Process-local execution: drains run in this process using the selected instance. */
 export const layer = Layer.effect(
@@ -124,7 +128,7 @@ export const layer = Layer.effect(
         Effect.provideServiceEffect(CodeModeJob.Current, background),
         instances.provide(session),
         Effect.tapCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
+          Cause.hasInterruptsOnly(cause) || isDecline(cause)
             ? Effect.void
             : Effect.logError("Failed to drain Session", cause).pipe(Effect.annotateLogs({ sessionID })),
         ),

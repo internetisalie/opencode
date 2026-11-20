@@ -5597,7 +5597,7 @@ describe("SessionRunnerLLM", () => {
     ])
   })
 
-  scenario("interrupts runner continuation on a decline after settling an ordinary tool error", function* (s) {
+  scenario("stops runner continuation with a typed decline after settling an ordinary tool error", function* (s) {
     const registry = yield* Tool.Service
     yield* transformTools(
       registry,
@@ -5640,7 +5640,7 @@ describe("SessionRunnerLLM", () => {
     const exit = yield* s.resume.pipe(Effect.exit)
 
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure") expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+    if (exit._tag === "Failure") expect(Cause.squash(exit.cause)).toMatchObject({ _tag: "Session.StepDeclinedError" })
     expect(s.requests).toHaveLength(1)
     expect(yield* s.context).toMatchObject([
       Expected.user("Call declined"),
@@ -5745,7 +5745,7 @@ describe("SessionRunnerLLM", () => {
     const exit = yield* Fiber.join(run)
 
     expect(exit._tag).toBe("Failure")
-    if (exit._tag === "Failure") expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+    if (exit._tag === "Failure") expect(Cause.squash(exit.cause)).toMatchObject({ _tag: "Session.StepDeclinedError" })
     expect(s.requests).toHaveLength(1)
     expect(yield* s.context).toMatchObject([
       Expected.user("Ask then stop"),

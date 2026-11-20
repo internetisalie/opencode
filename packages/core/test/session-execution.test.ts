@@ -17,6 +17,7 @@ import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { StepDeclinedError } from "@opencode/core/session/error"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionEvent } from "@opencode/core/session/event"
 import { SessionInbox } from "@opencode/core/session/inbox"
@@ -29,13 +30,19 @@ import { Agent } from "@opencode/core/agent"
 import { ID } from "@opencode/core/model"
 import { Provider } from "@opencode/core/provider"
 import { daemonShells } from "./fixture/shell-daemon"
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Logger, Scope, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
+  ),
+)
+const persisted = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
+    [Bus.node.replace(Bus.configured({ persist: true }))],
   ),
 )
 
@@ -58,6 +65,52 @@ describe("SessionExecution lifecycle", () => {
     expect(SessionExecution.terminal(interrupted)).toEqual({ type: "interrupted", reason: "shutdown" })
     expect(SessionExecution.terminal(interrupted, "user")).toEqual({ type: "interrupted", reason: "user" })
   })
+
+  persisted.effect("settles a declined owned child without retaining a shutdown claim or losing its cancellation notice", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_decline_parent")
+      const child = Session.ID.make("ses_decline_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent })
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "general",
+          description: "Decline write",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, ({ sessionID }) =>
+        sessionID === child ? Effect.fail(new StepDeclinedError()) : Effect.void,
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* execution.resume(child).pipe(Effect.exit)
+      yield* execution.awaitIdle(child)
+      yield* execution.awaitIdle(parent)
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+      expect((yield* SessionInbox.list(database.db, parent)).map((item) => item.payload)).toMatchObject([
+        { metadata: { source: "subagent", childID: child, state: "cancelled" } },
+      ])
+      expect(yield* jobs.pendingBackground).toEqual([])
+      const store = yield* SessionStore.Service
+      expect(yield* store.get(child)).toMatchObject({ outcome: "interrupted", time: { idle: expect.anything() } })
+      const bus = yield* Bus.Service
+      const log = yield* Stream.runCollect(bus.log({ aggregateID: child, follow: false }))
+      expect(log.filter((event) => event.type.startsWith("session.execution."))).toMatchObject([
+        { type: "session.execution.started", data: { sessionID: child } },
+        { type: "session.execution.interrupted", data: { sessionID: child, reason: "user" } },
+      ])
+    }),
+  )
 
   it.effect("resumes a directly driven child after execution teardown", () =>
     Effect.gen(function* () {

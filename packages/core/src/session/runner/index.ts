@@ -5,7 +5,7 @@ import type { AIError } from "@opencode/ai/effect"
 import { Context, Data, Effect } from "effect"
 import { SessionSchema } from "../schema.js"
 import type { Promotable } from "../inbox.js"
-import type { AgentNotFoundError, MessageDecodeError, StepFailedError } from "../error.js"
+import type { AgentNotFoundError, MessageDecodeError, StepDeclinedError, StepFailedError } from "../error.js"
 import { SessionRunnerModel } from "./model.js"
 import type { Instructions } from "../../instructions/index.js"
 
@@ -15,6 +15,7 @@ export type RunError =
   | MessageDecodeError
   | AgentNotFoundError
   | StepFailedError
+  | StepDeclinedError
   | Instructions.InitializationBlocked
   | FileSystem.DirectoryNotFoundError
 
