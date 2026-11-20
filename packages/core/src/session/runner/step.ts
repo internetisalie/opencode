@@ -44,6 +44,7 @@ interface Input {
   readonly isLocationClosed: () => boolean
   /** Why the execution is being interrupted, once it is: `"user"` when someone stopped it. */
   readonly interruption?: () => "user" | "shutdown" | undefined
+  readonly onDecline?: () => void
   /** Whether this server is handing its process daemon over to the next one (see `PersistentPty.handoffPrepared`). */
   readonly handoffPrepared?: () => boolean
   readonly sessionID: SessionSchema.ID
@@ -184,6 +185,13 @@ export const make = Effect.gen(function* () {
         // Read each tool's exit once all have ended, so what they raised while stopping (a decline, a defect) counts.
         const exits = Exit.isSuccess(joined) ? joined.value : yield* Fiber.awaitAll(fibers)
         const tools = classifyToolExits(exits, toolRuns, Exit.hasInterrupts(joined))
+        const locationClosed = input.isLocationClosed()
+        const declines = tools.declines.map((decline) => ({
+          ...decline,
+          shutdown: decline.reason._tag === "Permission.DeclinedError" ? decline.reason.shutdown : locationClosed,
+        }))
+        const userDeclined = declines.some((decline) => !decline.shutdown)
+        if (userDeclined) input.onDecline?.()
         // A server handing its process daemon over leaves the step as a crash would: unsettled calls and no step end.
         // The next server settles them when the Session resumes, and takes over the shell commands still running for
         // them. Any other interrupt settles the calls here.
@@ -196,6 +204,7 @@ export const make = Effect.gen(function* () {
           return yield* Effect.interrupt
 
         if (
+          declines.length === 0 &&
           !publisher.record().outputStarted &&
           isContextOverflowFailure(streamFailure) &&
           (yield* restore(input.recoverOverflow))
@@ -235,6 +244,7 @@ export const make = Effect.gen(function* () {
           ...(llmFailure === undefined ? {} : { "error.type": llmFailure.reason._tag }),
         })
         if (
+          declines.length === 0 &&
           input.recoverContinuation &&
           llmFailure?.reason._tag === "Transport" &&
           (llmFailure.reason.recovery === "retry-full" || llmFailure.reason.recovery === "rotate-and-retry-full") &&
@@ -242,7 +252,7 @@ export const make = Effect.gen(function* () {
         )
           return Outcome.RecoverFull()
         const retry =
-          llmFailure && llmError && !isContextOverflowFailure(llmFailure)
+          declines.length === 0 && llmFailure && llmError && !isContextOverflowFailure(llmFailure)
             ? yield* restore(
                 input.retry(
                   llmFailure,
@@ -259,10 +269,10 @@ export const make = Effect.gen(function* () {
         }
         if (llmError) yield* publisher.failAssistant(llmError)
 
-        for (const decline of tools.declines)
+        for (const decline of declines)
           yield* publisher.failTool(decline.call.id, {
             type: "aborted",
-            message: input.isLocationClosed()
+            message: decline.shutdown
               ? "Interaction cancelled because the location shut down"
               : decline.reason._tag === "QuestionTool.CancelledError"
                 ? decline.reason.message
@@ -317,11 +327,9 @@ export const make = Effect.gen(function* () {
         if (llmError && retry?.retry && tools.declines.length === 0 && !tools.interrupted)
           return Outcome.Retry({ error: llmError, decision: retry, freshAssistant: true })
 
+        if (userDeclined) return yield* new StepDeclinedError()
         if (Exit.isFailure(stream)) return yield* Effect.failCause(stream.cause)
-        if (tools.declines.length > 0) {
-          if (input.isLocationClosed()) return Outcome.Completed({ needsContinuation: true })
-          return yield* new StepDeclinedError()
-        }
+        if (declines.length > 0) return Outcome.Completed({ needsContinuation: true })
         if (tools.interrupted && tools.failure) return yield* Effect.failCause(tools.failure)
         if (tools.interrupted && Exit.isFailure(joined)) return yield* Effect.failCause(joined.cause)
         if (record.failure) return yield* new StepFailedError({ error: record.failure })

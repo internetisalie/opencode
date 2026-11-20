@@ -48,7 +48,8 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 type InterruptReason = "user" | "shutdown"
 
-export function terminal(exit: Exit.Exit<void, SessionRunner.RunError>, reason?: InterruptReason) {
+export function terminal(exit: Exit.Exit<void, SessionRunner.RunError>, reason?: InterruptReason, declined = false) {
+  if (declined) return { type: "interrupted" as const, reason: "user" as const }
   if (Exit.isSuccess(exit)) return { type: "succeeded" as const }
   if (Cause.hasInterrupts(exit.cause)) return { type: "interrupted" as const, reason: reason ?? "shutdown" }
   if (isDecline(exit.cause)) return { type: "interrupted" as const, reason: reason ?? "user" }
@@ -106,6 +107,9 @@ export const layer = Layer.effect(
     })
     // Why a Session's execution is being interrupted, read from the coordinator once it exists.
     let interruption: (sessionID: SessionSchema.ID) => InterruptReason | undefined = () => undefined
+    // A queued owner interrupt can replace the typed runner exit after masked settlement.
+    // Keep the accepted decline until this busy period's terminal hook consumes it.
+    const declined = new Set<SessionSchema.ID>()
     const drain = Effect.fnUntraced(function* (
       sessionID: SessionSchema.ID,
       force: boolean,
@@ -123,6 +127,9 @@ export const layer = Layer.effect(
           promotable,
           stepped,
           interruption: () => interruption(sessionID),
+          onDecline: () => {
+            declined.add(sessionID)
+          },
         }),
       ).pipe(
         Effect.provideServiceEffect(CodeModeJob.Current, background),
@@ -161,7 +168,7 @@ export const layer = Layer.effect(
         reportLifecycle(
           sessionID,
           Effect.gen(function* () {
-            const outcome = terminal(exit, reason)
+            const outcome = terminal(exit, reason, declined.delete(sessionID))
             if (outcome.type === "interrupted" && outcome.reason === "shutdown") {
               subagentReport.clear(sessionID)
               // Shutdown keeps the claim and the running Job row for restart continuity.

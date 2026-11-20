@@ -41,6 +41,8 @@ export interface Interface {
     readonly stepped?: boolean
     /** Why the execution is being interrupted, once it is: `"user"` when someone stopped it. */
     readonly interruption?: () => "user" | "shutdown" | undefined
+    /** Records a decline before masked settlement can be followed by a pending owner interrupt. */
+    readonly onDecline?: () => void
   }) => Effect.Effect<DrainResult, RunError>
 }
 

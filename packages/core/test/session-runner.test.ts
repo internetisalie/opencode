@@ -39,6 +39,11 @@ import { Job } from "@opencode/core/job"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { Snapshot } from "@opencode/core/snapshot"
+import { LocationLifecycle } from "@opencode/core/location-lifecycle"
+import { PersistentPty } from "@opencode/core/persistent-pty/index"
+import { Instance } from "@opencode/core/instance/service"
+import { SessionRestart } from "@opencode/core/session/execution/restart"
+import { Shell } from "@opencode/core/shell"
 import { SessionEvent } from "@opencode/core/session/event"
 import { SessionCompaction } from "@opencode/core/session/compaction"
 import { SessionInbox } from "@opencode/core/session/inbox"
@@ -242,6 +247,9 @@ const makeRunnerState = (compaction?: SessionRunnerModel.Resolved["compaction"])
     systemUnavailable: false,
     systemLoadHook: Effect.void,
     activationHook: Effect.void,
+    captureSnapshot: Effect.undefined as Effect.Effect<Snapshot.ID | undefined>,
+    locationClosed: false,
+    handoffPrepared: false,
     skillBaselines: new Map<Agent.ID, string>(),
     authorizations: new Array<Tool.Context>(),
     executions: new Array<string>(),
@@ -299,8 +307,9 @@ const transformTools = (registry: Tool.Interface, tools: Readonly<Record<string,
   registry.transform((editor) =>
     Object.entries(tools).forEach(([name, tool]) => editor.add({ ...tool, name, options: options ?? tool.options })),
   )
+const RealPermission = Context.Reference<boolean>("test/SessionRunner/RealPermission", { defaultValue: () => false })
 const layer = Layer.unwrap(
-  Effect.map(RunnerState, (state) => {
+  Effect.map(Effect.all([RunnerState, RealPermission]), ([state, realPermission]) => {
     const modelTransport = Layer.succeed(
       SessionModelTransport.Service,
       SessionModelTransport.Service.of({
@@ -440,7 +449,26 @@ const layer = Layer.unwrap(
       small: () => Effect.undefined,
     })
     const replacements: LayerNode.Replacements = [
-      Snapshot.node.replace(Snapshot.noopLayer),
+      Snapshot.node.replace(
+        Layer.effect(
+          Snapshot.Service,
+          Snapshot.Service.use((service) =>
+            Effect.succeed(
+              Snapshot.Service.of({ ...service, capture: () => Effect.suspend(() => state.captureSnapshot) }),
+            ),
+          ).pipe(Effect.provide(Snapshot.noopLayer)),
+        ),
+      ),
+      LocationLifecycle.node.replace(
+        Layer.mock(LocationLifecycle.Service, {
+          isClosed: () => state.locationClosed,
+          isRetained: () => false,
+          shutdown: Effect.sync(() => {
+            state.locationClosed = true
+          }),
+        }),
+      ),
+      PersistentPty.node.replace(Layer.mock(PersistentPty.Service, { handoffPrepared: () => state.handoffPrepared })),
       LayerNodePlatform.llmClient.replace(testLLM),
       SessionRunnerModel.node.replace(models),
       InstructionBuiltIns.node.replace(systemContext),
@@ -448,7 +476,7 @@ const layer = Layer.unwrap(
       Location.node.replace(Location.boundNode({ directory: AbsolutePath.make("/project") })),
       SkillInstructions.node.replace(skillInstructions),
       ReferenceInstructions.node.replace(referenceInstructions),
-      Permission.node.replace(permission),
+      ...(realPermission ? [] : [Permission.node.replace(permission)]),
       Config.node.replace(config),
       PluginSupervisor.node.replace(Layer.empty),
       Plugin.node.replace(Layer.mock(Plugin.Service, { awaitActivation: Effect.suspend(() => state.activationHook) })),
@@ -516,6 +544,7 @@ const layer = Layer.unwrap(
         Tool.node,
         PluginHooks.node,
         Job.node,
+        Permission.node,
         echoNode,
         SessionRunnerModel.node,
         InstructionBuiltIns.node,
@@ -542,6 +571,7 @@ const layer = Layer.unwrap(
   }),
 ).pipe(Layer.provideMerge(Layer.sync(RunnerState, makeRunnerState)), Layer.provideMerge(testLLM))
 const it = testEffect(layer)
+const lifecycleTests = testEffect(layer.pipe(Layer.provide(Layer.succeed(RealPermission, true))))
 const sessionID = Session.ID.make("ses_runner_test")
 const otherSessionID = Session.ID.make("ses_runner_other")
 
@@ -2083,9 +2113,7 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(last)).toEqual(["First", "Fourth"])
     expect(last.system.map((part) => part.text).join("\n")).not.toContain("Entered mode")
     // Clients still see every message; only the model context hides the stale update.
-    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([
-      { text: "Entered mode" },
-    ])
+    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([{ text: "Entered mode" }])
   })
 
   scenario("uses the selected model family prompt when the agent does not override it", function* (s) {
@@ -5596,6 +5624,212 @@ describe("SessionRunnerLLM", () => {
       { type: "assistant", finish: "stop" },
     ])
   })
+
+  for (const overlap of ["Location reload", "owner shutdown", "Location teardown"] as const) {
+    const teardown = overlap === "Location teardown"
+    lifecycleTests.effect(
+      teardown
+        ? "recovers a permission wait cancelled by Location teardown alone"
+        : `accepted decline survives ${overlap} during masked step settlement`,
+      () =>
+        Effect.gen(function* () {
+          const s = yield* setup
+          const permissions = yield* Permission.Service
+          const registry = yield* Tool.Service
+          const jobs = yield* Job.Service
+          const store = yield* SessionStore.Service
+          const database = yield* Database.Service
+          const runner = yield* SessionRunner.Service
+          yield* insertSession(otherSessionID)
+          yield* s.db
+            .update(SessionTable)
+            .set({ parent_id: otherSessionID })
+            .where(eq(SessionTable.id, sessionID))
+            .run()
+          let writes = 0
+          let selections = 0
+          let handoffs = 0
+          const agents = yield* Agent.Service
+          yield* agents.transform((editor) =>
+            editor.update(Agent.ID.make("build"), (agent) => {
+              agent.permissions.push({ action: "overlap_write", resource: "*", effect: "ask" })
+            }),
+          )
+          yield* transformTools(
+            registry,
+            {
+              declined: {
+                name: "declined",
+                description: "Make a write that requires approval",
+                input: Schema.Struct({}),
+                output: Schema.Struct({}),
+                execute: (_, context) =>
+                  permissions
+                    .assert({
+                      ...Permission.invocation(context),
+                      action: "overlap_write",
+                      resources: ["file.txt"],
+                    })
+                    .pipe(
+                      Effect.mapError((error) => new ToolFailure({ message: "Write not permitted", error })),
+                      Effect.map(() => {
+                        writes++
+                        return { output: {}, content: "wrote file.txt" }
+                      }),
+                    ),
+              },
+            },
+            { codemode: false },
+          )
+          const instance = Layer.succeed(Instance.Service, {
+            // Only the runner capability is used by this test's execution selector.
+            provide: () =>
+              Effect.provide(
+                Layer.succeed(SessionRunner.Service, {
+                  drain: (input) =>
+                    Effect.suspend(() => {
+                      if (input.sessionID !== sessionID) return Effect.succeed(SessionRunner.DrainResult.Complete())
+                      // Simulate selecting the replacement Location after a reload, so PoC 3 can
+                      // actually resume and consume the sentinel model response rather than looping.
+                      if (++selections > 1) s.locationClosed = false
+                      return runner.drain(input)
+                    }),
+                }),
+              ) as ReturnType<Instance.Interface["provide"]>,
+          })
+          const runtime = SessionRestart.layer().pipe(
+            Layer.provideMerge(SessionExecution.layer),
+            Layer.provide(instance),
+            Layer.provide(
+              Layer.succeed(Shell.Daemon, {
+                at: () =>
+                  Effect.sync(() => {
+                    handoffs++
+                  }).pipe(Effect.andThen(Effect.die("unexpected shell access"))),
+                watch: () =>
+                  Effect.sync(() => {
+                    handoffs++
+                  }).pipe(Effect.andThen(Effect.die("unexpected shell watch"))),
+                handoffPrepared: () => s.handoffPrepared,
+              }),
+            ),
+            Layer.provide(Layer.succeed(Database.Service, database)),
+            Layer.provide(Layer.succeed(Bus.Service, s.bus)),
+            Layer.provide(Layer.succeed(SessionStore.Service, store)),
+            Layer.provide(Layer.succeed(Job.Service, jobs)),
+            Layer.provide(Layer.succeed(Session.Service, s.session)),
+            Layer.provide(Layer.succeed(SessionInbox.Service, s.sessionInbox)),
+          )
+          const scope = yield* Scope.fork(yield* Effect.scope)
+          const execution = Context.get(yield* Layer.buildWithScope(runtime, scope), SessionExecution.Service)
+          yield* jobs.start({
+            id: sessionID,
+            type: "subagent",
+            run: Effect.never,
+            recovery: {
+              kind: "subagent",
+              childSessionID: sessionID,
+              parentSessionID: otherSessionID,
+              agent: "build",
+              description: "Write file.txt",
+            },
+          })
+          yield* jobs.background(sessionID)
+          const asked = yield* Deferred.make<Permission.ID>()
+          const isAsked = Schema.is(Permission.Event.Asked)
+          const unsubscribe = yield* s.bus.listen((event) =>
+            isAsked(event) ? Deferred.succeed(asked, event.data.id).pipe(Effect.asVoid) : Effect.void,
+          )
+          yield* Effect.addFinalizer(() => unsubscribe)
+          const reached = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>()
+          const release = yield* Deferred.make<void>()
+          let calls = 0
+          s.captureSnapshot = Effect.withFiber((owner) =>
+            ++calls === 2
+              ? Deferred.succeed(reached, owner).pipe(Effect.andThen(Deferred.await(release)), Effect.as(undefined))
+              : Effect.undefined,
+          )
+          yield* s.admit("Call declined")
+          yield* s.llm.push(
+            TestLLM.toolCall("call-decline-overlap", "declined", {}),
+            TestLLM.text("Unexpected continuation", "continued"),
+          )
+          const run = yield* execution.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+          const requestID = yield* Effect.raceFirst(
+            Deferred.await(asked),
+            Fiber.join(run).pipe(
+              Effect.flatMap((exit) =>
+                Effect.die(new Error("Execution settled before the permission ask", { cause: exit })),
+              ),
+            ),
+          )
+          if (teardown) {
+            s.locationClosed = true
+            yield* permissions.close
+          } else yield* permissions.reply({ requestID, reply: "reject" })
+          const owner = yield* Deferred.await(reached)
+          const before = yield* s.context
+          if (overlap === "Location reload") {
+            s.locationClosed = true
+            yield* permissions.close
+          } else if (!teardown) {
+            s.handoffPrepared = true
+            owner.interruptUnsafe()
+          }
+          yield* Deferred.succeed(release, undefined)
+          expect(before).toMatchObject([
+            Expected.user("Call declined"),
+            Expected.assistant({}, [
+              Expected.failedTool(
+                { id: "call-decline-overlap" },
+                {
+                  error: {
+                    type: "aborted",
+                    message: teardown
+                      ? "Interaction cancelled because the location shut down"
+                      : "The user declined this tool call",
+                  },
+                },
+              ),
+            ]),
+          ])
+          yield* execution.awaitIdle(sessionID)
+          yield* execution.awaitIdle(otherSessionID)
+          expect(writes).toBe(0)
+          expect(handoffs).toBe(0)
+          expect(s.requests).toHaveLength(teardown ? 2 : 1)
+          expect(selections).toBe(teardown ? 2 : 1)
+          expect(yield* store.listSuspended()).toEqual([])
+          const log = yield* Stream.runCollect(s.bus.log({ aggregateID: sessionID, follow: false }))
+          if (teardown) {
+            expect(yield* store.get(sessionID)).toMatchObject({ outcome: "succeeded" })
+            return
+          }
+          expect(log.filter((event) => event.type.startsWith("session.execution."))).toMatchObject([
+            { type: "session.execution.started" },
+            { type: "session.execution.interrupted", data: { reason: "user" } },
+          ])
+          const notices = SessionInbox.list(s.db, otherSessionID).pipe(
+            Effect.map((items) => items.map((item) => item.payload)),
+          )
+          expect(yield* notices).toMatchObject([
+            { metadata: { source: "subagent", childID: sessionID, state: "cancelled" } },
+          ])
+          expect(yield* jobs.pendingBackground).toEqual([])
+          yield* Scope.close(scope, Exit.void)
+          const restarted = yield* Layer.buildWithScope(runtime, yield* Scope.fork(yield* Effect.scope))
+          yield* Context.get(restarted, SessionRestart.Service).resumeSuspendedSessions.pipe(Effect.scoped)
+          const after = Context.get(restarted, SessionExecution.Service)
+          yield* after.awaitIdle(sessionID)
+          yield* after.awaitIdle(otherSessionID)
+          expect(s.requests).toHaveLength(1)
+          expect(handoffs).toBe(0)
+          expect(yield* notices).toMatchObject([
+            { metadata: { source: "subagent", childID: sessionID, state: "cancelled" } },
+          ])
+        }),
+    )
+  }
 
   scenario("stops runner continuation with a typed decline after settling an ordinary tool error", function* (s) {
     const registry = yield* Tool.Service

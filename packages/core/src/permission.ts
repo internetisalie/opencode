@@ -64,7 +64,9 @@ export const Unattended = Context.Reference<Permission.Ruleset | undefined>("@op
   defaultValue: () => undefined,
 })
 
-export class DeclinedError extends Schema.TaggedError<DeclinedError>()("Permission.DeclinedError", {}) {}
+export class DeclinedError extends Schema.TaggedError<DeclinedError>()("Permission.DeclinedError", {
+  shutdown: Schema.optional(Schema.Literal(true)),
+}) {}
 
 export class CorrectedError extends Schema.TaggedError<CorrectedError>()("Permission.CorrectedError", {
   feedback: Schema.String,
@@ -156,7 +158,7 @@ const layer = Layer.effect(
             requestID: item.request.id,
             reply: "reject",
           })
-          .pipe(Effect.ensuring(Deferred.fail(item.deferred, new DeclinedError()))),
+          .pipe(Effect.ensuring(Deferred.fail(item.deferred, new DeclinedError({ shutdown: true })))),
       )
       pending.clear()
     }).pipe(Effect.uninterruptible)
@@ -249,7 +251,7 @@ const layer = Layer.effect(
           const deferred = yield* Deferred.make<void, DeclinedError | CorrectedError>()
           const item = { request, agent, deferred }
           if (closed) {
-            yield* Deferred.fail(deferred, new DeclinedError())
+            yield* Deferred.fail(deferred, new DeclinedError({ shutdown: true }))
             return item
           }
           if (pending.has(request.id))
@@ -272,7 +274,7 @@ const layer = Layer.effect(
 
     const assert = Effect.fn("Permission.assert")((input: AssertInput) =>
       Effect.gen(function* () {
-        if (closed) return yield* Effect.die(new DeclinedError())
+        if (closed) return yield* Effect.die(new DeclinedError({ shutdown: true }))
         const result = yield* evaluateInput(input)
         return yield* Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {

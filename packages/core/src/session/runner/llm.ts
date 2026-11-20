@@ -216,7 +216,7 @@ const layer = Layer.effect(
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step, input.interruption)
+        continuing = yield* runStep(next.context, step, input)
         stepped = true
         step++
         force = false
@@ -237,7 +237,7 @@ const layer = Layer.effect(
     const runStep = Effect.fn("SessionRunner.runStep")(function* (
       first: SessionContext.Loaded,
       step: number,
-      interruption: DrainInput["interruption"],
+      input: Pick<DrainInput, "interruption" | "onDecline">,
     ) {
       const sessionID = first.session.id
       let assistantMessageID = SessionMessage.ID.create()
@@ -294,7 +294,8 @@ const layer = Layer.effect(
           )
         const outcome = yield* steps.attempt({
           isLocationClosed: lifecycle.isClosed,
-          interruption,
+          interruption: input.interruption,
+          onDecline: input.onDecline,
           handoffPrepared: pty.handoffPrepared,
           sessionID,
           assistantMessageID,
