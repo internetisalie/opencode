@@ -82,6 +82,9 @@ jobs:
         run: |
           bun run script/test.ts test/project.test.ts
           bun run script/test.ts test/session-owned.test.ts
+          bun run script/test.ts test/location.test.ts
+          bun run script/test.ts test/session-execution.test.ts
+          bun run script/test.ts test/session-runner.test.ts
 
       - name: Test database migration and V2 plugin integration
         working-directory: packages/core
@@ -95,9 +98,11 @@ jobs:
         working-directory: packages/util
         run: bun test test/global-roots.test.ts test/global.test.ts
 
-      - name: Test client service decisions
+      - name: Test client service decisions and Promise API
         working-directory: packages/client
-        run: bun test test/service-decision.test.ts
+        run: |
+          bun test test/service-decision.test.ts
+          bun test test/promise.test.ts
 
       - name: Test CLI service and lifecycle
         working-directory: packages/cli
@@ -107,14 +112,16 @@ jobs:
         working-directory: packages/plugin
         run: bun test test/host.test.ts
 
-      - name: Test server routes and session handoff
+      - name: Test server routes, session handoff, and event streams
         working-directory: packages/server
         run: |
           for test in \
             test/project-directory.test.ts \
             test/plugin-routes.test.ts \
             test/simple-memory-integration.test.ts \
-            test/session-import.test.ts; do
+            test/session-import.test.ts \
+            test/event-feed.test.ts \
+            test/sse-failure.test.ts; do
             bun test "$test"
           done
 
