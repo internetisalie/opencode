@@ -112,6 +112,31 @@ describe("SessionExecution lifecycle", () => {
     }),
   )
 
+  persisted.effect("consumes the decline latch before the next execution of the same session", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      const sessionID = Session.ID.make("ses_decline_latch_reuse")
+      yield* seedSessions(database, [sessionID])
+      let drains = 0
+      const context = yield* buildExecution(yield* Scope.fork(yield* Effect.scope), ({ onDecline }) =>
+        Effect.sync(() => {
+          if (++drains === 1) onDecline?.()
+        }).pipe(Effect.andThen(Effect.interrupt)),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* execution.resume(sessionID).pipe(Effect.exit)
+      expect(yield* claims(database)).toEqual({ [sessionID]: false })
+      yield* execution.resume(sessionID).pipe(Effect.exit)
+      expect(yield* claims(database)).toEqual({ [sessionID]: true })
+      const log = yield* Stream.runCollect(bus.log({ aggregateID: sessionID, follow: false }))
+      expect(log.filter((event) => event.type === SessionEvent.Execution.Interrupted.type)).toMatchObject([
+        { data: { reason: "user" } },
+        { data: { reason: "shutdown" } },
+      ])
+    }),
+  )
+
   it.effect("resumes a directly driven child after execution teardown", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service

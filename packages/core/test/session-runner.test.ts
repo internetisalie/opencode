@@ -5625,12 +5625,15 @@ describe("SessionRunnerLLM", () => {
     ])
   })
 
-  for (const overlap of ["Location reload", "owner shutdown", "Location teardown"] as const) {
-    const teardown = overlap === "Location teardown"
+  for (const overlap of ["Location reload", "owner shutdown", "Location teardown", "Permission teardown"] as const) {
+    const permissionOnly = overlap === "Permission teardown"
+    const teardown = overlap === "Location teardown" || permissionOnly
     lifecycleTests.effect(
-      teardown
-        ? "recovers a permission wait cancelled by Location teardown alone"
-        : `accepted decline survives ${overlap} during masked step settlement`,
+      permissionOnly
+        ? "does not continue after Permission teardown while Location is open"
+        : teardown
+          ? "recovers a permission wait cancelled by Location teardown alone"
+          : `accepted decline survives ${overlap} during masked step settlement`,
       () =>
         Effect.gen(function* () {
           const s = yield* setup
@@ -5764,7 +5767,7 @@ describe("SessionRunnerLLM", () => {
             ),
           )
           if (teardown) {
-            s.locationClosed = true
+            s.locationClosed = !permissionOnly
             yield* permissions.close
           } else yield* permissions.reply({ requestID, reply: "reject" })
           const owner = yield* Deferred.await(reached)
@@ -5797,10 +5800,21 @@ describe("SessionRunnerLLM", () => {
           yield* execution.awaitIdle(otherSessionID)
           expect(writes).toBe(0)
           expect(handoffs).toBe(0)
-          expect(s.requests).toHaveLength(teardown ? 2 : 1)
-          expect(selections).toBe(teardown ? 2 : 1)
-          expect(yield* store.listSuspended()).toEqual([])
+          expect(s.requests).toHaveLength(overlap === "Location teardown" ? 2 : 1)
+          expect(selections).toBe(overlap === "Location teardown" ? 2 : 1)
           const log = yield* Stream.runCollect(s.bus.log({ aggregateID: sessionID, follow: false }))
+          if (permissionOnly) {
+            expect(s.locationClosed).toBe(false)
+            expect(yield* store.listSuspended()).toEqual([sessionID])
+            expect(log.filter((event) => event.type.startsWith("session.execution."))).toMatchObject([
+              { type: "session.execution.started" },
+              { type: "session.execution.interrupted", data: { reason: "shutdown" } },
+            ])
+            expect(yield* SessionInbox.list(s.db, otherSessionID)).toEqual([])
+            expect(yield* jobs.pendingBackground).toMatchObject([{ id: sessionID, status: "running" }])
+            return
+          }
+          expect(yield* store.listSuspended()).toEqual([])
           if (teardown) {
             expect(yield* store.get(sessionID)).toMatchObject({ outcome: "succeeded" })
             return

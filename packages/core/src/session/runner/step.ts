@@ -329,7 +329,12 @@ export const make = Effect.gen(function* () {
 
         if (userDeclined) return yield* new StepDeclinedError()
         if (Exit.isFailure(stream)) return yield* Effect.failCause(stream.cause)
-        if (declines.length > 0) return Outcome.Completed({ needsContinuation: true })
+        if (declines.length > 0) {
+          // A closed Location hands off at the next boundary. If only the interaction service
+          // closed, continuing here would issue another request against the torn-down service.
+          if (input.isLocationClosed()) return Outcome.Completed({ needsContinuation: true })
+          return yield* Effect.interrupt
+        }
         if (tools.interrupted && tools.failure) return yield* Effect.failCause(tools.failure)
         if (tools.interrupted && Exit.isFailure(joined)) return yield* Effect.failCause(joined.cause)
         if (record.failure) return yield* new StepFailedError({ error: record.failure })
