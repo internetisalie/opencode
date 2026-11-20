@@ -493,11 +493,11 @@ describe("DatabaseMigration", () => {
         const insert = (
           id: string,
           when: string,
-          extra: { status?: string; check?: string; remaining?: number; name?: string } = {},
+          extra: { status?: string; check?: string; remaining?: number; name?: string; sessionID?: string } = {},
         ) =>
           db.run(sql`
             INSERT INTO schedule (id, session_id, name, action, "when", tz, status, next_due_at, remaining_runs, "check", run_count, last_message_id, time_created, time_updated)
-            VALUES (${id}, 'ses_1', ${extra.name ?? null}, '{"type":"prompt","prompt":"check the build"}', ${when}, 'UTC', ${extra.status ?? "active"}, 60000, ${extra.remaining ?? null}, ${extra.check ?? null}, 2, ${`msg_${id}_2`}, 1, 2)
+            VALUES (${id}, ${extra.sessionID ?? "ses_1"}, ${extra.name ?? null}, '{"type":"prompt","prompt":"check the build"}', ${when}, 'UTC', ${extra.status ?? "active"}, 60000, ${extra.remaining ?? null}, ${extra.check ?? null}, 2, ${`msg_${id}_2`}, 1, 2)
           `)
         yield* insert("sch_cron", '{"type":"cron","cron":"0 9 * * *"}', { name: "morning" })
         yield* insert("sch_in", '{"type":"in","in":"1 minute"}', { status: "paused" })
@@ -506,6 +506,7 @@ describe("DatabaseMigration", () => {
         })
         yield* insert("sch_counted", '{"type":"every","every":"1 minute"}', { remaining: 2 })
         yield* insert("sch_done", '{"type":"every","every":"1 minute"}', { status: "done" })
+        yield* insert("sch_missing_session", '{"type":"every","every":"1 minute"}', { sessionID: "ses_missing" })
 
         yield* DatabaseMigration.applyOnly(db, [automationMigration, automationEventPosition, automationActiveIndex])
 

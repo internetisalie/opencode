@@ -40,6 +40,37 @@ jobs:
         with:
           install-flags: --os="*" --cpu="*" --libc="*"
 
+      - name: Install CLI port-owner tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lsof procps
+          command -v lsof
+          ps -o command= -p "$$"
+
+      - name: Build V2 plugin fixtures from pinned sources
+        shell: bash
+        run: |
+          fixtures="$RUNNER_TEMP/opencode-fork/plugins"
+          build_fixture() {
+            local repo="$1" revision="$2" entry="$3" name="$4"
+            local source="$fixtures/$name"
+            mkdir -p "$source"
+            curl --fail --silent --show-error --location --retry 3 \
+              "https://codeload.github.com/internetisalie/$repo/tar.gz/$revision" \
+              | tar -xz -C "$source" --strip-components=1
+            (cd "$source" && bun install --frozen-lockfile && \
+              bun build "$entry" --target=bun --format=esm --outfile="$fixtures/$name.mjs")
+            test -s "$fixtures/$name.mjs"
+          }
+          # Same source revisions as the stack installation payloads. Build here so
+          # hosted PR runners do not depend on the stack's staging registry.
+          build_fixture opencode-pty 80127339612d535ddea51ce973e06616b4c60727 src/v2/index.ts pty
+          build_fixture opencode-plugin-simple-memory c7721b999863bbdb9158f665d63c0c7f3a8c534e server.ts simple-memory
+          {
+            echo "PTY_PLUGIN_PATH=$fixtures/pty.mjs"
+            echo "SIMPLE_MEMORY_PLUGIN_PATH=$fixtures/simple-memory.mjs"
+          } >> "$GITHUB_ENV"
+
       - name: Typecheck changed server packages sequentially
         run: |
           for package in plugin core server; do
@@ -52,6 +83,26 @@ jobs:
           bun run script/test.ts test/project.test.ts
           bun run script/test.ts test/session-owned.test.ts
 
+      - name: Test database migration and V2 plugin integration
+        working-directory: packages/core
+        run: |
+          test -s "$PTY_PLUGIN_PATH"
+          test -s "$SIMPLE_MEMORY_PLUGIN_PATH"
+          bun run script/test.ts test/database-migration.test.ts test/plugin/http.test.ts
+          bun run script/test.ts test/plugin/pty-integration.test.ts test/plugin/simple-memory-integration.test.ts
+
+      - name: Test global roots
+        working-directory: packages/util
+        run: bun test test/global-roots.test.ts test/global.test.ts
+
+      - name: Test client service decisions
+        working-directory: packages/client
+        run: bun test test/service-decision.test.ts
+
+      - name: Test CLI service and lifecycle
+        working-directory: packages/cli
+        run: bun test --timeout 30000 test/service.test.ts test/service-lifecycle.test.ts
+
       - name: Test plugin host
         working-directory: packages/plugin
         run: bun test test/host.test.ts
@@ -62,6 +113,7 @@ jobs:
           for test in \
             test/project-directory.test.ts \
             test/plugin-routes.test.ts \
+            test/simple-memory-integration.test.ts \
             test/session-import.test.ts; do
             bun test "$test"
           done
