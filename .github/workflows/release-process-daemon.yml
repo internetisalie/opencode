@@ -89,11 +89,16 @@ jobs:
             target: x86_64-apple-darwin
           - runner: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ github.repository == 'internetisalie/opencode' && matrix.runner == 'blacksmith-6vcpu-macos-15' && 'macos-15' || matrix.runner }}
     env:
       PROTOCOL_VERSION: ${{ needs.checks.outputs.protocol }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
+      - name: Verify native macOS ARM64 runner
+        if: github.repository == 'internetisalie/opencode' && matrix.target == 'aarch64-apple-darwin'
+        run: |
+          echo "Runner: $RUNNER_OS/$RUNNER_ARCH; machine: $(uname -m)"
+          test "$RUNNER_OS" = macOS && test "$RUNNER_ARCH" = ARM64 && test "$(uname -m)" = arm64
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
         with:

@@ -50,13 +50,18 @@ jobs:
 
   test:
     name: Core (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.repository == 'internetisalie/opencode' && matrix.os == 'blacksmith-6vcpu-macos-15' && 'macos-15' || matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, blacksmith-6vcpu-macos-15]
     steps:
+      - name: Verify native macOS ARM64 runner
+        if: github.repository == 'internetisalie/opencode' && matrix.os == 'blacksmith-6vcpu-macos-15'
+        run: |
+          echo "Runner: $RUNNER_OS/$RUNNER_ARCH; machine: $(uname -m)"
+          test "$RUNNER_OS" = macOS && test "$RUNNER_ARCH" = ARM64 && test "$(uname -m)" = arm64
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
         with:
