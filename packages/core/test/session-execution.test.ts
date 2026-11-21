@@ -1587,6 +1587,85 @@ describe("SessionRestart background recovery", () => {
     }),
   )
 
+  it.effect("wakes an unclaimed parent after shutdown retires the outbox but cannot start the wake", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const bus = yield* Bus.Service
+      const sessions = yield* Session.Service
+      const parent = Session.ID.make("ses_stranded_report_parent")
+      const child = Session.ID.make("ses_stranded_report_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent })
+      yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID: parent })
+      const notificationID = SessionMessage.ID.create()
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        notificationID,
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "general",
+          description: "Write",
+        },
+        background: true,
+        run: Effect.never,
+      })
+      const declined = yield* Deferred.make<void>()
+      const oldScope = yield* Scope.fork(yield* Effect.scope)
+      const old = yield* buildExecution(oldScope, ({ sessionID, onDecline }) =>
+        sessionID === child
+          ? Effect.sync(() => onDecline?.()).pipe(
+              Effect.andThen(Deferred.succeed(declined, undefined)),
+              Effect.andThen(Effect.never),
+            )
+          : Effect.die("parent must not drain in the closing execution scope"),
+      )
+      yield* Context.get(old, SessionExecution.Service).wake(child)
+      yield* Deferred.await(declined)
+      yield* Scope.close(oldScope, Exit.void)
+      expect(yield* claims(database)).toEqual({ [parent]: false, [child]: false })
+      expect(yield* jobs.pendingBackground).toEqual([])
+      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
+        {
+          id: notificationID,
+          type: "synthetic",
+          delivery: "steer",
+          payload: { metadata: { childID: child, state: "cancelled" } },
+        },
+      ])
+
+      const scope = yield* Scope.fork(yield* Effect.scope)
+      const restarted = yield* Job.make.pipe(Scope.provide(scope))
+      const drained: Session.ID[] = []
+      const fresh = yield* buildExecution(
+        scope,
+        ({ sessionID, promotable }) =>
+          Effect.sync(() => {
+            expect(promotable).toBe("steer")
+            drained.push(sessionID)
+          }).pipe(Effect.andThen(SessionInbox.promote(database.db, bus, sessionID, "steer")), Effect.asVoid),
+        undefined,
+        restarted,
+      )
+      const restart = Context.get(fresh, SessionRestart.Service)
+      const execution = Context.get(fresh, SessionExecution.Service)
+      yield* restart.resumeSuspendedSessions
+      yield* execution.awaitIdle(parent)
+      expect(drained).toEqual([parent])
+      yield* restart.resumeSuspendedSessions
+      yield* execution.awaitIdle(parent)
+      expect(drained).toEqual([parent])
+      expect(yield* restarted.pendingBackground).toEqual([])
+      expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
+      expect((yield* sessions.messages({ sessionID: parent })).filter((msg) => msg.type === "synthetic")).toMatchObject([
+        { id: notificationID, metadata: { childID: child, state: "cancelled" } },
+      ])
+    }),
+  )
+
   it.effect("wakes the parent of an admitted report if the restart sweep fails afterward", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -1812,7 +1891,15 @@ describe("SessionRestart background recovery", () => {
         expect(yield* attempts(database, parent)).toBe(0)
         expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(2)
         expect(yield* restarted.pendingBackground).toEqual([])
+        // The stub drain does not promote reports. Only consume them for the
+        // successful resume; the exhausted parent must leave them parked.
+        if (resumeAttempts < 2) {
+          yield* SessionInbox.promote(database.db, bus, parent, "steer")
+          yield* SessionInbox.promote(database.db, bus, parent, "steer")
+        }
+        yield* Deferred.succeed(release, undefined)
         yield* restart.resumeSuspendedSessions
+        yield* execution.awaitIdle(parent)
         expect(drained).toHaveLength(resumeAttempts < 2 ? 1 : 0)
       }),
     )

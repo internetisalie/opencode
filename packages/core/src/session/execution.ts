@@ -26,7 +26,7 @@ export interface Interface {
   /** Starts execution while idle or joins the active execution. */
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, SessionRunner.RunError>
   /** Registers newly recorded work. Repeated wakeups may coalesce. */
-  readonly wake: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  readonly wake: (sessionID: SessionSchema.ID, promotable?: SessionInbox.Promotable) => Effect.Effect<void>
   /**
    * Interrupt active work owned by this process. Idle interruption is a no-op. Resolves once
    * the interruption is accepted; cleanup settles asynchronously in the execution fiber.

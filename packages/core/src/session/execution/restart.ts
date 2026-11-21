@@ -1,6 +1,7 @@
 export * as SessionRestart from "./restart.js"
 
 import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
+import { and, eq, sql } from "drizzle-orm"
 import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Shell as ShellSchema } from "@opencode/schema/shell"
@@ -16,6 +17,7 @@ import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
 import { SessionHistory } from "../history.js"
 import { SessionSchema } from "../schema.js"
+import { SessionInboxTable, SessionTable } from "../sql.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
@@ -88,9 +90,9 @@ export const layer = (options?: Options) =>
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
 
-      const wake = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+      const wake = Effect.fnUntraced(function* (sessionID: SessionSchema.ID, promotable?: "steer") {
         const owner = yield* store.get(sessionID)
-        if (owner && !owner.revert) yield* execution.wake(sessionID)
+        if (owner && !owner.revert) yield* execution.wake(sessionID, promotable)
       })
 
       const prepareResume = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
@@ -392,11 +394,36 @@ export const layer = (options?: Options) =>
             [...(yield* store.listSuspended()), ...children].filter((sessionID) => !active.has(sessionID)),
           )
           const state = { defer: true }
-          const wakes = new Set<SessionSchema.ID>()
+          const wakes = new Map<SessionSchema.ID, "steer" | undefined>()
+          // Admission acknowledges a subagent outbox row before the parent takes a claim.
+          // If shutdown wins that gap, the inbox is the only record of the pending wake.
+          // Only recover successfully idle parents here; in particular, do not revive a
+          // parent that the restart budget already terminalized as failed.
+          const admitted = yield* db
+            .selectDistinct({ sessionID: SessionInboxTable.session_id })
+            .from(SessionInboxTable)
+            .innerJoin(SessionTable, eq(SessionTable.id, SessionInboxTable.session_id))
+            .where(
+              and(
+                eq(SessionInboxTable.type, "synthetic"),
+                eq(SessionInboxTable.delivery, "steer"),
+                eq(SessionTable.idle_outcome, "succeeded"),
+                sql`json_extract(${SessionInboxTable.payload}, '$.metadata.source') = 'subagent'`,
+              ),
+            )
+            .all()
+            .pipe(Effect.orDie)
+          for (const { sessionID } of admitted) {
+            if (!active.has(sessionID) && !suspended.has(sessionID)) wakes.set(sessionID, "steer")
+          }
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               state.defer = false
-              yield* Effect.forEach(wakes, (sessionID) => Effect.ignoreCause(wake(sessionID)), { discard: true })
+              yield* Effect.forEach(
+                wakes,
+                ([sessionID, promotable]) => Effect.ignoreCause(wake(sessionID, promotable)),
+                { discard: true },
+              )
               suspended.clear()
             }),
           )
@@ -408,7 +435,7 @@ export const layer = (options?: Options) =>
                 Effect.tap(() => {
                   if (suspended.has(input.sessionID)) return Effect.void
                   if (!state.defer) return wake(input.sessionID)
-                  wakes.add(input.sessionID)
+                  wakes.set(input.sessionID, undefined)
                   return Effect.void
                 }),
                 Effect.uninterruptible,
