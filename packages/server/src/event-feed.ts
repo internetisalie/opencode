@@ -4,8 +4,6 @@ import { Bus } from "@opencode/core/bus"
 import { Event } from "@opencode/schema/event"
 import { isOpenCodeEvent, type OpenCodeEvent } from "@opencode/protocol/groups/event"
 import { Cause, Context, Effect, Layer, Queue, Schema, Scope, Stream } from "effect"
-import { SessionStore } from "@opencode/core/session/store"
-import { observeRemoteEvents, RemoteEventConfig } from "./remote-events"
 
 export const SubscriberCapacity = 4_096
 
@@ -23,7 +21,6 @@ export class EncodingError extends Schema.TaggedError<EncodingError>()("EventFee
 export type Error = SubscriberOverflowError | EncodingError
 
 export interface Interface {
-  readonly forward: (event: OpenCodeEvent) => Effect.Effect<void>
   readonly subscribe: (types?: ReadonlyArray<string>) => Effect.Effect<Stream.Stream<string, Error>, never, Scope.Scope>
 }
 
@@ -48,7 +45,7 @@ export const make = Effect.fn("EventFeed.make")(function* (
       for (const subscriber of current) Queue.failCauseUnsafe(subscriber, Cause.fail(error))
     })
 
-  const publish = Effect.fnUntraced(function* (event: Event.Payload | OpenCodeEvent) {
+  const publish = Effect.fnUntraced(function* (event: Event.Payload) {
     if (!isOpenCodeEvent(event)) return
     let encoded: string | undefined
     for (const [subscriber, types] of subscribers) {
@@ -76,7 +73,6 @@ export const make = Effect.fn("EventFeed.make")(function* (
   yield* Effect.addFinalizer(() => unsubscribe)
 
   return Service.of({
-    forward: publish,
     subscribe: (types) =>
       Effect.acquireRelease(
         Queue.dropping<string, Error>(capacity).pipe(
@@ -92,12 +88,6 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
-    const feed = yield* make(bus.listen)
-    const config = yield* Effect.serviceOption(RemoteEventConfig)
-    if (config._tag === "Some" && config.value) {
-      const sessions = yield* SessionStore.Service
-      yield* observeRemoteEvents(config.value, sessions, feed.forward)
-    }
-    return feed
+    return yield* make(bus.listen)
   }),
 )

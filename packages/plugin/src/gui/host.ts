@@ -335,6 +335,8 @@ export interface BridgeLayout {
     /** Height. */
     readonly height: number
   }
+  /** Visible portion of `bounds`, in the same window DIPs. Omit to show the full surface; an empty clip hides it. */
+  readonly clip?: NonNullable<BridgeLayout["bounds"]>
   /** The window's content size the bounds were measured against. */
   readonly viewport?: {
     /** Content width in window pixels. */
@@ -571,7 +573,8 @@ export interface Bridge {
     /**
      * Explicit enable-state rows from the existing preload startup reply. Undefined (or an omitted promise) means
      * unknown: activation waits for `list()` or a live list, never assumes all are enabled. An empty list is
-     * authoritative: no saved settings. A rejected promise also falls back to the manager list.
+     * authoritative: no saved settings. A rejected promise also falls back to the manager list. When `list()` fails
+     * too, or neither answers in time, only built-ins run until main answers or pushes a live list.
      */
     readonly initial?: Promise<readonly EnableState[] | undefined>
     /** The installed plugins, built-ins included. */

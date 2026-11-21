@@ -19,7 +19,7 @@ if (!source) {
       const module = yield* Effect.promise(() => import(pathToFileURL(source).href))
       const plugins = yield* Plugin.Service
       const tools = yield* Tool.Service
-      yield* PluginPromise.fromPromise(module.default).effect(yield* PluginHost.make(plugins))
+      yield* PluginPromise.fromPromise(module.default).effect(yield* PluginHost.make(plugins, module.default.id))
       const registered = (yield* tools.list()).filter((tool) => tool.name.startsWith("pty_"))
       expect(registered.map((tool) => tool.name).sort()).toEqual([
         "pty_kill",

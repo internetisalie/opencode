@@ -6,8 +6,10 @@ One Linux job typechecks `plugin`, `core`, and `server` in sequence, then runs t
 
 Only successful pushes to the fork publish `ghcr.io/internetisalie/opencode-stable`:
 
-- An `internetisalie-v2` branch push writes the mutable `:internetisalie-v2` tag and an immutable `:sha-<12-character commit>` tag.
+- An `internetisalie-v2` branch push writes `:internetisalie-v2` and `:sha-<12-character commit>` tags.
 - A matching release tag writes `:<release tag>` and the same commit tag.
+
+All tags can be moved, including commit and release tags. Pin `ghcr.io/internetisalie/opencode-stable@sha256:<digest>` to select the exact published image.
 
 Pull requests and manual runs do not receive package write permission. The image is currently `linux/amd64` only. To support ARM workers, add a separate `linux-arm64-musl` binary build and a multi-platform Docker image after validating that target.
 

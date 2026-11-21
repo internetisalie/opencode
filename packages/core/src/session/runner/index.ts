@@ -5,7 +5,7 @@ import type { AIError } from "@opencode/ai/effect"
 import { Context, Data, Effect } from "effect"
 import { SessionSchema } from "../schema.js"
 import type { Promotable } from "../inbox.js"
-import type { AgentNotFoundError, MessageDecodeError, StepFailedError } from "../error.js"
+import type { AgentNotFoundError, MessageDecodeError, StepDeclinedError, StepFailedError } from "../error.js"
 import { SessionRunnerModel } from "./model.js"
 import type { Instructions } from "../../instructions/index.js"
 
@@ -15,6 +15,7 @@ export type RunError =
   | MessageDecodeError
   | AgentNotFoundError
   | StepFailedError
+  | StepDeclinedError
   | Instructions.InitializationBlocked
   | FileSystem.DirectoryNotFoundError
 
@@ -38,6 +39,10 @@ export interface Interface {
     readonly promotable?: Promotable
     /** The previous drain ran a step before handing off, so reaching idle still runs the idle hook. */
     readonly stepped?: boolean
+    /** Why the execution is being interrupted, once it is: `"user"` when someone stopped it. */
+    readonly interruption?: () => "user" | "shutdown" | undefined
+    /** Records a decline before masked settlement can be followed by a pending owner interrupt. */
+    readonly onDecline?: () => void
   }) => Effect.Effect<DrainResult, RunError>
 }
 
