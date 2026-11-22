@@ -1666,6 +1666,41 @@ describe("SessionRestart background recovery", () => {
     }),
   )
 
+  for (const scenario of [
+    { name: "wakes a parent the user interrupted that holds an admitted subagent notice", source: "subagent", drains: 1 },
+    { name: "leaves an idle parent parked when its steer notice is not a subagent report", source: "shell", drains: 0 },
+  ] as const) {
+    it.effect(scenario.name, () =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const bus = yield* Bus.Service
+        const sessions = yield* Session.Service
+        const parent = Session.ID.make(`ses_notice_sweep_${scenario.source}`)
+        yield* seedSessions(database, [parent])
+        yield* bus.publish(
+          scenario.source === "subagent" ? SessionEvent.Execution.Interrupted : SessionEvent.Execution.Succeeded,
+          scenario.source === "subagent" ? { sessionID: parent, reason: "user" } : { sessionID: parent },
+        )
+        yield* sessions.synthetic({
+          sessionID: parent,
+          text: "Admitted notice",
+          metadata: { source: scenario.source },
+          resume: false,
+        })
+
+        const scope = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+        const drained: Session.ID[] = []
+        const context = yield* buildExecution(scope, ({ sessionID }) =>
+          Effect.sync(() => void drained.push(sessionID)),
+        )
+        yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+        yield* Context.get(context, SessionExecution.Service).awaitIdle(parent)
+        expect(drained).toHaveLength(scenario.drains)
+      }),
+    )
+  }
+
   it.effect("wakes the parent of an admitted report if the restart sweep fails afterward", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -1897,7 +1932,6 @@ describe("SessionRestart background recovery", () => {
           yield* SessionInbox.promote(database.db, bus, parent, "steer")
           yield* SessionInbox.promote(database.db, bus, parent, "steer")
         }
-        yield* Deferred.succeed(release, undefined)
         yield* restart.resumeSuspendedSessions
         yield* execution.awaitIdle(parent)
         expect(drained).toHaveLength(resumeAttempts < 2 ? 1 : 0)

@@ -1,6 +1,6 @@
 export * as SessionInbox from "./inbox.js"
 
-import { and, asc, eq, or } from "drizzle-orm"
+import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import {
@@ -27,7 +27,7 @@ import { SessionBlob } from "./blob.js"
 import { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStored } from "./stored.js"
-import { SessionInboxTable, SessionMessageTable } from "./sql.js"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
 import { SessionHistory } from "./history.js"
 
 type DatabaseService = Database.Interface["db"]
@@ -517,6 +517,31 @@ export const has = Effect.fn("SessionInbox.has")(function* (
     .get()
     .pipe(Effect.orDie)
   return row !== undefined
+})
+
+/**
+ * Sessions holding a pending steer notice that a subagent report admitted. A parent whose last turn
+ * failed is excluded: the restart budget terminalizes a parent as failed and leaves its notices
+ * parked. Any other outcome, including none, is a parent the normal report path would wake.
+ */
+export const subagentNoticeSessions = Effect.fn("SessionInbox.subagentNoticeSessions")(function* (
+  db: DatabaseService,
+) {
+  const rows = yield* db
+    .selectDistinct({ sessionID: SessionInboxTable.session_id })
+    .from(SessionInboxTable)
+    .innerJoin(SessionTable, eq(SessionTable.id, SessionInboxTable.session_id))
+    .where(
+      and(
+        eq(SessionInboxTable.type, "synthetic"),
+        eq(SessionInboxTable.delivery, "steer"),
+        or(isNull(SessionTable.idle_outcome), ne(SessionTable.idle_outcome, "failed")),
+        sql`json_extract(${SessionInboxTable.payload}, '$.metadata.source') = 'subagent'`,
+      ),
+    )
+    .all()
+    .pipe(Effect.orDie)
+  return rows.map((row) => row.sessionID)
 })
 
 const publishMutation = <A, E, R>(input: PendingRef, effect: Effect.Effect<A, E, R>) =>

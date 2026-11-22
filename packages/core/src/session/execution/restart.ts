@@ -1,7 +1,6 @@
 export * as SessionRestart from "./restart.js"
 
 import { Cause, Context, Effect, Layer, Option, Schema } from "effect"
-import { and, eq, sql } from "drizzle-orm"
 import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Shell as ShellSchema } from "@opencode/schema/shell"
@@ -17,7 +16,7 @@ import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
 import { SessionHistory } from "../history.js"
 import { SessionSchema } from "../schema.js"
-import { SessionInboxTable, SessionTable } from "../sql.js"
+import { SessionInbox } from "../inbox.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
@@ -397,23 +396,9 @@ export const layer = (options?: Options) =>
           const wakes = new Map<SessionSchema.ID, "steer" | undefined>()
           // Admission acknowledges a subagent outbox row before the parent takes a claim.
           // If shutdown wins that gap, the inbox is the only record of the pending wake.
-          // Only recover successfully idle parents here; in particular, do not revive a
-          // parent that the restart budget already terminalized as failed.
-          const admitted = yield* db
-            .selectDistinct({ sessionID: SessionInboxTable.session_id })
-            .from(SessionInboxTable)
-            .innerJoin(SessionTable, eq(SessionTable.id, SessionInboxTable.session_id))
-            .where(
-              and(
-                eq(SessionInboxTable.type, "synthetic"),
-                eq(SessionInboxTable.delivery, "steer"),
-                eq(SessionTable.idle_outcome, "succeeded"),
-                sql`json_extract(${SessionInboxTable.payload}, '$.metadata.source') = 'subagent'`,
-              ),
-            )
-            .all()
-            .pipe(Effect.orDie)
-          for (const { sessionID } of admitted) {
+          // Do not revive a parent that the restart budget already terminalized as failed.
+          const admitted = yield* SessionInbox.subagentNoticeSessions(db)
+          for (const sessionID of admitted) {
             if (!active.has(sessionID) && !suspended.has(sessionID)) wakes.set(sessionID, "steer")
           }
           yield* Effect.addFinalizer(() =>
