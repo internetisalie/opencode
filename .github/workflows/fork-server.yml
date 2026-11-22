@@ -213,7 +213,8 @@ jobs:
             echo "::error::$image is already published; publish a new release version"
             exit 1
           fi
-          if [[ "$err" == *"not found"* ]]; then
+          not_found='^ERROR: [^[:space:]]+: not found$'
+          if [[ "$err" =~ $not_found ]]; then
             echo "$image is not published; continuing"
             exit 0
           fi
