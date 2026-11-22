@@ -1,4 +1,6 @@
 import { Agent } from "@opencode/core/agent"
+import { App } from "@opencode/core/app"
+import { Artifact } from "@opencode/core/artifact"
 import { AISDK } from "@opencode/core/aisdk"
 import { Command } from "@opencode/core/command"
 import { Config } from "@opencode/core/config"
@@ -6,6 +8,7 @@ import { Credential } from "@opencode/core/credential"
 import { Database } from "@opencode/core/database/database"
 import { Environment } from "@opencode/core/environment/index"
 import { FileAccess } from "@opencode/core/file-access"
+import { Flag } from "@opencode/core/flag"
 import { LayerNodePlatform } from "@opencode/util/effect/app-node-platform"
 import { AppProcess } from "@opencode/util/process"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -15,6 +18,7 @@ import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { Form } from "@opencode/core/form"
 import { Generate } from "@opencode/core/generate"
+import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Integration } from "@opencode/core/integration"
 import { Job } from "@opencode/core/job"
 import { KV } from "@opencode/core/kv"
@@ -27,6 +31,7 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginHttp } from "@opencode/core/plugin/http"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
+import { SharedCache } from "@opencode/core/shared-cache"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
@@ -64,6 +69,11 @@ const generateLayer = Layer.succeed(
     text: () => Effect.succeed(""),
     image: () => Effect.die("unused"),
     decisions: () => Effect.die("unused"),
+    video: {
+      start: () => Effect.die("unused"),
+      status: () => Effect.die("unused"),
+      result: () => Effect.die("unused"),
+    },
   }),
 )
 
@@ -76,16 +86,19 @@ const permissionLayer = Layer.succeed(
     ask: (input) => Effect.succeed({ id: input.id ?? Permission.ID.create(), effect: "ask" }),
     assert: () => Effect.void,
     assertNotDenied: () => Effect.void,
+    allows: () => Effect.succeed(false),
     reply: () => Effect.void,
     get: () => Effect.succeed(undefined),
     forSession: () => Effect.succeed([]),
     list: () => Effect.succeed([]),
+    nested: () => Effect.void,
   }),
 )
 
 export const makePluginTestLayer = (permission = permissionLayer, generate = generateLayer) =>
   AppNodeBuilder.build(
     LayerNode.group([
+      App.node,
       AppProcess.node,
       FileSystem.node,
       FSUtil.node,
@@ -93,6 +106,7 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       Npm.node,
       Credential.node,
       Config.node,
+      Flag.node,
       Database.node,
       Environment.node,
       FileAccess.node,
@@ -103,15 +117,18 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       LayerNodePlatform.httpClient,
       Plugin.node,
       Agent.node,
+      Artifact.node,
       AISDK.node,
       Provider.node,
       Model.node,
       Command.node,
+      InstructionDiscovery.node,
       Integration.node,
       Job.node,
       KV.node,
       Mcp.node,
       Session.node,
+      SharedCache.node,
       InstructionEntry.node,
       PersistentPty.node,
       LocationServiceMap.node,

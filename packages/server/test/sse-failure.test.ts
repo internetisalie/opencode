@@ -2,7 +2,6 @@ import { expect } from "bun:test"
 import { OpenCode } from "@opencode/client/effect"
 import { ClientApi } from "@opencode/protocol/client"
 import { Authorization } from "@opencode/protocol/middleware/authorization"
-import { SessionOwnership } from "@opencode/protocol/middleware/session-ownership"
 import { Event } from "@opencode/schema/event"
 import { Session } from "@opencode/schema/session"
 import { Cause, Effect, Exit, Layer, Stream } from "effect"
@@ -28,7 +27,6 @@ const handler = HttpRouter.toWebHandler(
       ),
     ),
     Layer.provide(schemaErrorLayer),
-    Layer.provide(Layer.succeed(SessionOwnership, SessionOwnership.of((effect) => effect))),
     Layer.provide(
       Layer.succeed(
         Authorization,

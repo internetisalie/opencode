@@ -59,6 +59,9 @@ export class StepFailedError extends Schema.TaggedError<StepFailedError>()("Sess
   }
 }
 
+/** A user declined a required interaction; this is not an owner-scope shutdown. */
+export class StepDeclinedError extends Schema.TaggedError<StepDeclinedError>()("Session.StepDeclinedError", {}) {}
+
 export class PromptConflictError extends Schema.TaggedError<PromptConflictError>()("Session.PromptConflictError", {
   sessionID: SessionSchema.ID,
   messageID: SessionMessage.ID,

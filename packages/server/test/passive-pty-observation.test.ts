@@ -196,7 +196,7 @@ live("P04 response loss, removal and child exit are not PTY completion", () => E
 
 live("P05 public decoder controls preserve codes and decode checkpoint", () => Effect.sync(() => {
   const base = {
-    id: "pty_persistent_1", sessionID: "ses_P05", title: "P05", command: "/bin/sh", args: [], cwd: "/",
+    id: "pty_persistent_1", sessionID: "ses_P05", title: "P05", userTitle: null, command: "/bin/sh", args: [], cwd: "/",
     status: "exited", pid: 1, foregroundProcess: null, size: { cols: 80, rows: 24 }, output: { head: 0, tail: 0 },
   }
   const decode = Schema.decodeUnknownSync(Schema.toCodecJson(Schema.Struct({ data: Schema.Array(PersistentPty.Info) })))

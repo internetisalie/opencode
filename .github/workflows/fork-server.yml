@@ -40,6 +40,37 @@ jobs:
         with:
           install-flags: --os="*" --cpu="*" --libc="*"
 
+      - name: Install CLI port-owner tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lsof procps
+          command -v lsof
+          ps -o command= -p "$$"
+
+      - name: Build V2 plugin fixtures from pinned sources
+        shell: bash
+        run: |
+          fixtures="$RUNNER_TEMP/opencode-fork/plugins"
+          build_fixture() {
+            local repo="$1" revision="$2" entry="$3" name="$4"
+            local source="$fixtures/$name"
+            mkdir -p "$source"
+            curl --fail --silent --show-error --location --retry 3 \
+              "https://codeload.github.com/internetisalie/$repo/tar.gz/$revision" \
+              | tar -xz -C "$source" --strip-components=1
+            (cd "$source" && bun install --frozen-lockfile && \
+              bun build "$entry" --target=bun --format=esm --outfile="$fixtures/$name.mjs")
+            test -s "$fixtures/$name.mjs"
+          }
+          # Same source revisions as the stack installation payloads. Build here so
+          # hosted PR runners do not depend on the stack's staging registry.
+          build_fixture opencode-pty 80127339612d535ddea51ce973e06616b4c60727 src/v2/index.ts pty
+          build_fixture opencode-plugin-simple-memory c7721b999863bbdb9158f665d63c0c7f3a8c534e server.ts simple-memory
+          {
+            echo "PTY_PLUGIN_PATH=$fixtures/pty.mjs"
+            echo "SIMPLE_MEMORY_PLUGIN_PATH=$fixtures/simple-memory.mjs"
+          } >> "$GITHUB_ENV"
+
       - name: Typecheck changed server packages sequentially
         run: |
           for package in plugin core server; do
@@ -51,20 +82,46 @@ jobs:
         run: |
           bun run script/test.ts test/project.test.ts
           bun run script/test.ts test/session-owned.test.ts
+          bun run script/test.ts test/location.test.ts
+          bun run script/test.ts test/session-execution.test.ts
+          bun run script/test.ts test/session-runner.test.ts
+
+      - name: Test database migration and V2 plugin integration
+        working-directory: packages/core
+        run: |
+          test -s "$PTY_PLUGIN_PATH"
+          test -s "$SIMPLE_MEMORY_PLUGIN_PATH"
+          bun run script/test.ts test/database-migration.test.ts test/plugin/http.test.ts
+          bun run script/test.ts test/plugin/pty-integration.test.ts test/plugin/simple-memory-integration.test.ts
+
+      - name: Test global roots
+        working-directory: packages/util
+        run: bun test test/global-roots.test.ts test/global.test.ts
+
+      - name: Test client service decisions and Promise API
+        working-directory: packages/client
+        run: |
+          bun test test/service-decision.test.ts
+          bun test test/promise.test.ts
+
+      - name: Test CLI service and lifecycle
+        working-directory: packages/cli
+        run: bun test --timeout 30000 test/service.test.ts test/service-lifecycle.test.ts
 
       - name: Test plugin host
         working-directory: packages/plugin
         run: bun test test/host.test.ts
 
-      - name: Test server routes and session handoff
+      - name: Test server routes, session handoff, and event streams
         working-directory: packages/server
         run: |
           for test in \
             test/project-directory.test.ts \
             test/plugin-routes.test.ts \
+            test/simple-memory-integration.test.ts \
             test/session-import.test.ts \
-            test/session-mirror-event.test.ts \
-            test/session-remote.test.ts; do
+            test/event-feed.test.ts \
+            test/sse-failure.test.ts; do
             bun test "$test"
           done
 
@@ -114,7 +171,7 @@ jobs:
           mkdir -p "$suite"/{d,c,f,s,r,t,h,o}
           trap cleanup EXIT
           test -x "$native"
-          test "$(sha256sum "$native")" = "375334d9e20ffd7f7cd111eaaed7802d87ce13c9c15608ec42942b2b5da2e1b7  $native"
+          test "$(sha256sum "$native")" = "3a781ac5ff8bc189d229149f73a9555c82d4bc8a27c7642240859411cc5f0049  $native"
           cd "$GITHUB_WORKSPACE/packages/server"
           timeout --signal=TERM --kill-after=5s 180s bun test test/persistent-pty.test.ts test/passive-pty-observation.test.ts
 
@@ -142,6 +199,25 @@ jobs:
           path: packages/cli/dist/cli-linux-x64-baseline-musl
           if-no-files-found: error
           retention-days: 1
+
+      - name: Export system-test candidate
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          tag="opencode-fork-server:sha-${GITHUB_SHA:0:12}"
+          docker tag opencode-fork-server:smoke "$tag"
+          cd "$RUNNER_TEMP"
+          docker save "$tag" | gzip -1 > opencode-server.tar.gz
+          sha256sum opencode-server.tar.gz > opencode-server.tar.gz.sha256
+
+      - name: Upload system-test image
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: opencode-server-linux-amd64-${{ github.sha }}
+          path: ${{ runner.temp }}/opencode-server.tar.gz*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
 
   publish-image:
     if: github.repository == 'internetisalie/opencode' && github.event_name == 'push'

@@ -3,6 +3,8 @@ import { SessionInbox } from "@opencode/schema/session-inbox"
 import { PromptInput } from "@opencode/schema/prompt-input"
 import { Session } from "@opencode/schema/session"
 import { SessionStats } from "@opencode/schema/session-stats"
+import { TokenUsage } from "@opencode/schema/token-usage"
+import { Money } from "@opencode/schema/money"
 import { InstructionEntry } from "@opencode/schema/instruction-entry"
 import { Project } from "@opencode/schema/project"
 import { DateTimeUtcFromMillis, NonNegativeInt, PositiveInt } from "@opencode/schema/schema"
@@ -37,7 +39,6 @@ import { EventLog } from "@opencode/schema/event-log"
 import { FileDiff } from "@opencode/schema/file-diff"
 import { Form } from "@opencode/schema/form"
 import { PublicSessionMessage } from "./message.js"
-import { SessionOwnership } from "../middleware/session-ownership.js"
 
 const SessionActive = Schema.Struct({
   type: Schema.Literal("running"),
@@ -166,7 +167,10 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       HttpApiEndpoint.post("session.create", "/api/session", {
         payload: Schema.Struct({
           id: Session.ID.pipe(Schema.optional),
-          parentID: Session.ID.pipe(Schema.optional),
+          parentID: Session.ID.pipe(Schema.optional).annotate({
+            description:
+              "Set parentID to create a subagent session at the parent's location; set agent to choose its agent (otherwise it uses the default) and start it with session.prompt. After each completed round, the child sends a `<subagent>` report to the parent's inbox and wakes the parent unless it has a staged revert.",
+          }),
           title: Schema.String.pipe(Schema.optional),
           agent: Agent.ID.pipe(Schema.optional),
           model: Model.Ref.pipe(Schema.optional),
@@ -200,24 +204,6 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           summary: "Import session",
           description:
             "Import a projected session transcript at the requested location. Accepts transcripts exported by earlier releases. If parentID is supplied, the parent session must already exist; import parents before children.",
-        }),
-      ),
-    )
-    .add(
-      HttpApiEndpoint.post("session.mirror", "/api/experimental/session/mirror", {
-        payload: Schema.Struct({
-          ...PublicSessionTransfer.fields,
-          source: Schema.NonEmptyString,
-          location: Location.PublicRef.pipe(Schema.optional),
-        }),
-        success: Schema.Struct({ data: PublicSessionInfo }),
-        error: [ConflictError, SessionNotFoundError],
-      }).annotateMerge(
-        OpenApi.annotations({
-          identifier: "experimental.session.mirror",
-          summary: "Mirror a leaf-owned session",
-          description:
-            "Idempotently ingest a settled session transcript from a stable external source. Existing local sessions and divergent transcripts are rejected.",
         }),
       ),
     )
@@ -426,15 +412,13 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         }),
         success: Schema.Struct({ data: SessionInbox.Synthetic }),
         error: [ConflictError, SessionNotFoundError],
-      })
-        .middleware(sessionLocationMiddleware)
-        .annotateMerge(
-          OpenApi.annotations({
-            identifier: "session.synthetic",
-            summary: "Add synthetic message",
-            description: "Durably admit synthetic session input and schedule execution unless resume is false.",
-          }),
-        ),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.synthetic",
+          summary: "Add synthetic message",
+          description: "Durably admit synthetic session input and schedule execution unless resume is false.",
+        }),
+      ),
     )
     .add(
       HttpApiEndpoint.post("session.shell", "/api/session/:sessionID/shell", {
@@ -465,16 +449,14 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         }),
         success: Schema.Struct({ data: SessionInbox.Compaction }),
         error: [ConflictError, SessionNotFoundError],
-      })
-        .middleware(sessionLocationMiddleware)
-        .annotateMerge(
-          OpenApi.annotations({
-            identifier: "session.compact",
-            summary: "Compact session",
-            description:
-              "Durably admit a session compaction request. Steers by default: it runs at the next step boundary instead of waiting behind queued prompts.",
-          }),
-        ),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.compact",
+          summary: "Compact session",
+          description:
+            "Durably admit a session compaction request. Steers by default: it runs at the next step boundary instead of waiting behind queued prompts.",
+        }),
+      ),
     )
     .add(
       HttpApiEndpoint.post("session.wait", "/api/experimental/session/:sessionID/wait", {
@@ -658,7 +640,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ prompt: Schema.String }),
         success: Schema.Struct({
-          data: Schema.Struct({ text: Schema.String }),
+          // Same `tokens` and `cost` an assistant message reports for a step.
+          data: Schema.Struct({ text: Schema.String, tokens: TokenUsage.Info, cost: Money.USD }),
         }).annotate({ identifier: "SessionGenerateResponse" }),
         error: [SessionNotFoundError, ServiceUnavailableError],
       })
@@ -667,7 +650,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           OpenApi.annotations({
             identifier: "session.generate",
             summary: "Generate text from session context",
-            description: "Generate transient text from the current session context without mutating session history.",
+            description:
+              "Generate transient text from the current session context without mutating session history. Its tokens and cost count toward the session's totals.",
           }),
         ),
     )
@@ -843,7 +827,6 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         }),
       ),
     )
-    .middleware(SessionOwnership)
     .annotateMerge(
       OpenApi.annotations({
         title: "session",
