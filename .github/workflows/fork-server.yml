@@ -196,6 +196,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Refuse a re-push of a release tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-internetisalie\.[1-9][0-9]*$ ]]; then
+            echo "$GITHUB_REF_NAME is not a release tag; nothing to check"
+            exit 0
+          fi
+          image="ghcr.io/internetisalie/opencode-stable:$GITHUB_REF_NAME"
+          set +e
+          err=$(docker buildx imagetools inspect "$image" 2>&1 >/dev/null)
+          status=$?
+          set -e
+          if [[ $status -eq 0 ]]; then
+            echo "::error::$image is already published; publish a new release version"
+            exit 1
+          fi
+          not_found='^ERROR: [^[:space:]]+: not found$'
+          if [[ "$err" =~ $not_found ]]; then
+            echo "$image is not published; continuing"
+            exit 0
+          fi
+          echo "$err" >&2
+          exit 1
+
       - name: Publish server image from the tested binary
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
