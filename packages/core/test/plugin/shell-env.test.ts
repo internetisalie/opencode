@@ -18,26 +18,35 @@ const it = testEffect(PluginTestLayer)
 type Env = Record<string, string | undefined>
 
 // A workspace as materialization leaves it: a manifest under .supervisor and the project member's card.
-const workspace = (root: string, project: string) =>
+const workspace = (
+  root: string,
+  project: string,
+  // Replacements for the manifest text and the card text, to build a workspace whose files do not decode.
+  files: { manifest?: string; card?: string } = {},
+) =>
   Effect.promise(async () => {
     await fs.mkdir(path.join(root, ".supervisor"), { recursive: true })
     await fs.mkdir(path.join(root, "base-member"), { recursive: true })
     await fs.mkdir(path.join(root, "project-member"), { recursive: true })
     await fs.writeFile(
       path.join(root, ".supervisor", "manifest.json"),
-      JSON.stringify({
-        version: 1,
-        members: [
-          { dir: "base-member", role: "base" },
-          { dir: "project-member", role: "project" },
-        ],
-      }),
+      files.manifest ??
+        JSON.stringify({
+          version: 1,
+          members: [
+            { dir: "base-member", role: "base" },
+            { dir: "project-member", role: "project" },
+          ],
+        }),
     )
     await fs.writeFile(
       path.join(root, "project-member", ".loom.yml"),
-      `profile:\n  project: { name: ${project}, repository: ${project} }\n`,
+      files.card ?? `profile:\n  project: { name: ${project}, repository: ${project} }\n`,
     )
   })
+
+// What a shell call still gets when the workspace gives no project: the session and the harness.
+const noProject = (sessionID: Session.ID) => ({ LOOM_SESSION_ID: sessionID, LOOM_HARNESS: "opencode" })
 
 const setup = Effect.gen(function* () {
   const plugins = yield* Plugin.Service
@@ -134,5 +143,70 @@ it.live("a shell call with no session id leaves the environment unchanged", () =
       PATH: "/bin",
       LOOM_LANE: "kept.lane",
     })
+  }),
+)
+
+// A workspace file the plugin cannot use never stops the shell call: the session and the harness are still set and
+// the session has no project.
+const unusable = (name: string, files: { manifest?: string; card?: string }) =>
+  it.live(`${name} leaves the shell call running with no project`, () =>
+    withTempDir((tmp) =>
+      Effect.gen(function* () {
+        const { create, shellEnv } = yield* setup
+        yield* workspace(tmp.path, "loom-delivery", files)
+        const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
+        expect(yield* shellEnv(seat.id)).toEqual(noProject(seat.id))
+      }),
+    ),
+  )
+
+unusable("a card with a YAML syntax error", { card: "profile:\n  project: { name: x\n  bad: [unclosed\n" })
+unusable("a card without profile.project.name", { card: "profile:\n  harness: opencode\n" })
+unusable("a manifest that is not JSON", { manifest: "{ not json" })
+unusable("a manifest whose members are not a list", { manifest: JSON.stringify({ members: "project-member" }) })
+unusable("a manifest with two project members", {
+  manifest: JSON.stringify({
+    members: [
+      { dir: "project-member", role: "project" },
+      { dir: "base-member", role: "project" },
+    ],
+  }),
+})
+
+it.live("a manifest that cannot be read leaves the shell call running with no project", () =>
+  withTempDir((tmp) =>
+    Effect.gen(function* () {
+      const { create, shellEnv } = yield* setup
+      yield* workspace(tmp.path, "loom-delivery")
+      yield* Effect.promise(async () => {
+        await fs.rm(path.join(tmp.path, ".supervisor", "manifest.json"))
+        await fs.mkdir(path.join(tmp.path, ".supervisor", "manifest.json"))
+      })
+      const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
+      expect(yield* shellEnv(seat.id)).toEqual(noProject(seat.id))
+    }),
+  ),
+)
+
+it.live("a card that cannot be read leaves the shell call running with no project", () =>
+  withTempDir((tmp) =>
+    Effect.gen(function* () {
+      const { create, shellEnv } = yield* setup
+      yield* workspace(tmp.path, "loom-delivery")
+      yield* Effect.promise(async () => {
+        await fs.rm(path.join(tmp.path, "project-member", ".loom.yml"))
+        await fs.mkdir(path.join(tmp.path, "project-member", ".loom.yml"))
+      })
+      const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
+      expect(yield* shellEnv(seat.id)).toEqual(noProject(seat.id))
+    }),
+  ),
+)
+
+it.live("a session id that names no session leaves the shell call running with the session and harness", () =>
+  Effect.gen(function* () {
+    const { shellEnv } = yield* setup
+    const missing = Session.ID.make("ses_missing_shell_env")
+    expect(yield* shellEnv(missing)).toEqual(noProject(missing))
   }),
 )
