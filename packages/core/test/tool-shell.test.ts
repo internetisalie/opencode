@@ -2556,15 +2556,10 @@ describe("ShellTool lane environment", () => {
             model: sessionModel,
           })
           const run = (id: Session.ID, label: string) =>
-            Effect.gen(function* () {
-              const started = performance.now()
-              const result = yield* executeTool(registry, {
-                ...call({ command: environmentCommand }, label),
-                sessionID: id,
-              }).pipe(Effect.timeout("5 seconds"))
-              console.log(`PROBE ${label} ${(performance.now() - started).toFixed(1)}ms`)
-              return result.content
-            })
+            executeTool(registry, { ...call({ command: environmentCommand }, label), sessionID: id }).pipe(
+              Effect.timeout("5 seconds"),
+              Effect.map((result) => result.content),
+            )
           expect(yield* run(laneSessionID, "before-hook")).toEqual([{ type: "text", text: "|||" }])
           yield* registerToolPlugin(ShellEnvPlugin.Plugin, {
             shell: { hook: (name, callback, options) => hooks.register("shell", name, callback, options) },
