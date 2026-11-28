@@ -2562,7 +2562,7 @@ describe("ShellTool lane environment", () => {
             )
           expect(yield* run(laneSessionID, "before-hook")).toEqual([{ type: "text", text: "|||" }])
           yield* registerToolPlugin(ShellEnvPlugin.Plugin, {
-            shell: { hook: (name, callback, options) => hooks.register("shell", name, callback, options) },
+            shell: { hook: (name, callback) => hooks.register("shell", name, callback) },
             session: { get: (input) => sessions.get(input.sessionID) },
           })
           expect(yield* run(laneSessionID, "lane")).toEqual([
