@@ -173,7 +173,7 @@ const unusable = (
   warned: Warned | undefined,
   damage: (root: string) => Promise<void> = async () => {},
   repair: (root: string) => Promise<void> = async () => {},
-  test: typeof it.live = it.live,
+  test: typeof it.live.skip = it.live,
 ) =>
   test(`${name} leaves the shell call running with no project`, () =>
     withTempDir((tmp) =>
