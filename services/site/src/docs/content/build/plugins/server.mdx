@@ -1801,6 +1801,8 @@ interface ShellCreateBefore {
   timeout: number
   shell: string
   env: Record<string, string | undefined>
+  /** The Session the command runs in. Absent when the call has none. */
+  sessionID?: Session.ID
 }
 ```
 
