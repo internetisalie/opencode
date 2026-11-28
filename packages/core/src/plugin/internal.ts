@@ -102,6 +102,7 @@ import { AgentPlugin } from "./agent.js"
 import BrowserPlugin from "@opencode/plugin-browser"
 import { CommandPlugin } from "./command.js"
 import { IdentityPlugin } from "./identity.js"
+import { ShellEnvPlugin } from "./shell-env.js"
 import { ForkNoticePlugin } from "./fork-notice.js"
 import { PlanPlugin } from "./plan.js"
 import { GoalPlugin } from "./goal.js"
@@ -266,6 +267,7 @@ const pre = [
   ...OptimizePlugin.Plugins,
   VerbosityPlugin.Plugin,
   IdentityPlugin.Plugin,
+  ShellEnvPlugin.Plugin,
   EditTool.Plugin,
   GlobTool.Plugin,
   GrepTool.Plugin,

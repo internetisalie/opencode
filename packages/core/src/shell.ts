@@ -886,11 +886,13 @@ const layer = () =>
         before?: (input: ShellCreateBefore) => Effect.Effect<void, E, R>,
       ) {
         const sessionID = input.metadata?.sessionID
+        const knownSessionID = Schema.is(SessionSchema.ID)(sessionID) ? sessionID : undefined
         const baseEnv =
           location.workspaceID !== undefined
             ? undefined
-            : ((Schema.is(SessionSchema.ID)(sessionID) ? yield* environments.get(sessionID) : undefined) ?? process.env)
+            : ((knownSessionID ? yield* environments.get(knownSessionID) : undefined) ?? process.env)
         const invocation: ShellCreateBefore = {
+          ...(knownSessionID ? { sessionID: knownSessionID } : {}),
           command: input.command,
           cwd: input.cwd ?? location.directory,
           timeout: input.timeout ?? 0,

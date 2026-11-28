@@ -43,6 +43,7 @@ import { ShellTool } from "@opencode/core/tool/plugin/shell"
 import { ToolOutput } from "@opencode/core/tool-output"
 import { Tool } from "@opencode/core/tool"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
+import { ShellEnvPlugin } from "@opencode/core/plugin/shell-env"
 import { SessionStep } from "@opencode/core/session/runner/step"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { disabledPersistentPtyLayer } from "./fixture/persistent-pty"
@@ -2530,6 +2531,49 @@ describe("ShellTool stopped", () => {
           expect(Exit.hasInterrupts(exit)).toBe(true)
           expect((yield* shell.wait(shellID)).status).toBe("killed")
           expect((yield* jobs.get(shellID))?.status).toBe("cancelled")
+        }),
+      )
+    }),
+  )
+})
+
+describe("ShellTool lane environment", () => {
+  const laneSessionID = Session.ID.make("ses_shell_tool_lane")
+  const environmentCommand = `printf '%s|%s|%s|%s' "$LOOM_LANE" "$LOOM_PROJECT" "$LOOM_SESSION_ID" "$LOOM_HARNESS"`
+  const test = isWindows || !Bun.which("sh") ? it.live.skip : it.live
+
+  test("a shell call reads the session's own address, from the title the session holds at that moment", () =>
+    withTempDir((tmp) => {
+      reset()
+      return withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const hooks = yield* PluginHooks.Service
+          const sessions = yield* Session.Service
+          yield* sessions.create({
+            id: laneSessionID,
+            title: "loom.probe",
+            location: Location.Ref.make({ directory: AbsolutePath.make(tmp.path) }),
+            model: sessionModel,
+          })
+          const run = (id: Session.ID, label: string) =>
+            Effect.gen(function* () {
+              const started = performance.now()
+              const result = yield* executeTool(registry, {
+                ...call({ command: environmentCommand }, label),
+                sessionID: id,
+              }).pipe(Effect.timeout("5 seconds"))
+              console.log(`PROBE ${label} ${(performance.now() - started).toFixed(1)}ms`)
+              return result.content
+            })
+          expect(yield* run(laneSessionID, "before-hook")).toEqual([{ type: "text", text: "|||" }])
+          yield* registerToolPlugin(ShellEnvPlugin.Plugin, {
+            shell: { hook: (name, callback, options) => hooks.register("shell", name, callback, options) },
+            session: { get: (input) => sessions.get(input.sessionID) },
+          })
+          expect(yield* run(laneSessionID, "lane")).toEqual([
+            { type: "text", text: `loom.probe|loom|${laneSessionID}|opencode` },
+          ])
+          expect(yield* run(sessionID, "seat")).toEqual([{ type: "text", text: `||${sessionID}|opencode` }])
         }),
       )
     }),
