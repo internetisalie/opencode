@@ -8,7 +8,7 @@ import { ShellEnvPlugin } from "@opencode/core/plugin/shell-env"
 import { Session } from "@opencode/core/session"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Location } from "@opencode/core/location"
-import { Effect } from "effect"
+import { Effect, Logger } from "effect"
 import { testEffect } from "../lib/effect"
 import { withTempDir } from "../fixture/tmpdir"
 import { PluginTestLayer } from "./fixture"
@@ -148,60 +148,73 @@ it.live("a shell call with no session id leaves the environment unchanged", () =
 
 // A workspace file the plugin cannot use never stops the shell call: the session and the harness are still set and
 // the session has no project.
-const unusable = (name: string, files: { manifest?: string; card?: string }) =>
+// The warnings an effect logs, as text.
+const withWarnings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const warnings: string[] = []
+    const value = yield* effect.pipe(
+      Effect.provide(
+        Logger.layer([
+          Logger.make((entry) => {
+            if (entry.logLevel === "Warn") warnings.push(JSON.stringify(entry.message))
+          }),
+        ]),
+      ),
+    )
+    return { value, warnings }
+  })
+
+// `warned` is the workspace file the warning names; undefined where the workspace is valid and no file is at fault.
+const unusable = (
+  name: string,
+  files: { manifest?: string; card?: string },
+  warned: ".supervisor/manifest.json" | "project-member/.loom.yml" | undefined,
+  damage: (root: string) => Promise<void> = async () => {},
+) =>
   it.live(`${name} leaves the shell call running with no project`, () =>
     withTempDir((tmp) =>
       Effect.gen(function* () {
         const { create, shellEnv } = yield* setup
         yield* workspace(tmp.path, "loom-delivery", files)
+        yield* Effect.promise(() => damage(tmp.path))
         const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
-        expect(yield* shellEnv(seat.id)).toEqual(noProject(seat.id))
+        const result = yield* withWarnings(shellEnv(seat.id))
+        expect(result.value).toEqual(noProject(seat.id))
+        if (warned === undefined) return
+        expect(result.warnings).toHaveLength(1)
+        expect(result.warnings[0]).toContain(JSON.stringify(path.join(tmp.path, warned)).slice(1, -1))
       }),
     ),
   )
 
-unusable("a card with a YAML syntax error", { card: "profile:\n  project: { name: x\n  bad: [unclosed\n" })
-unusable("a card without profile.project.name", { card: "profile:\n  harness: opencode\n" })
-unusable("a manifest that is not JSON", { manifest: "{ not json" })
-unusable("a manifest whose members are not a list", { manifest: JSON.stringify({ members: "project-member" }) })
-unusable("a manifest with two project members", {
-  manifest: JSON.stringify({
-    members: [
-      { dir: "project-member", role: "project" },
-      { dir: "base-member", role: "project" },
-    ],
-  }),
+unusable("a card with a YAML syntax error", { card: "profile:\n  project: { name: x\n  bad: [unclosed\n" }, "project-member/.loom.yml")
+unusable("a card without profile.project.name", { card: "profile:\n  harness: opencode\n" }, "project-member/.loom.yml")
+unusable("a manifest that is not JSON", { manifest: "{ not json" }, ".supervisor/manifest.json")
+unusable(
+  "a manifest whose members are not a list",
+  { manifest: JSON.stringify({ members: "project-member" }) },
+  ".supervisor/manifest.json",
+)
+unusable(
+  "a manifest with two project members",
+  {
+    manifest: JSON.stringify({
+      members: [
+        { dir: "project-member", role: "project" },
+        { dir: "base-member", role: "project" },
+      ],
+    }),
+  },
+  undefined,
+)
+unusable("a manifest that cannot be read", {}, ".supervisor/manifest.json", async (root) => {
+  await fs.rm(path.join(root, ".supervisor", "manifest.json"))
+  await fs.mkdir(path.join(root, ".supervisor", "manifest.json"))
 })
-
-it.live("a manifest that cannot be read leaves the shell call running with no project", () =>
-  withTempDir((tmp) =>
-    Effect.gen(function* () {
-      const { create, shellEnv } = yield* setup
-      yield* workspace(tmp.path, "loom-delivery")
-      yield* Effect.promise(async () => {
-        await fs.rm(path.join(tmp.path, ".supervisor", "manifest.json"))
-        await fs.mkdir(path.join(tmp.path, ".supervisor", "manifest.json"))
-      })
-      const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
-      expect(yield* shellEnv(seat.id)).toEqual(noProject(seat.id))
-    }),
-  ),
-)
-
-it.live("a card that cannot be read leaves the shell call running with no project", () =>
-  withTempDir((tmp) =>
-    Effect.gen(function* () {
-      const { create, shellEnv } = yield* setup
-      yield* workspace(tmp.path, "loom-delivery")
-      yield* Effect.promise(async () => {
-        await fs.rm(path.join(tmp.path, "project-member", ".loom.yml"))
-        await fs.mkdir(path.join(tmp.path, "project-member", ".loom.yml"))
-      })
-      const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
-      expect(yield* shellEnv(seat.id)).toEqual(noProject(seat.id))
-    }),
-  ),
-)
+unusable("a card that cannot be read", {}, "project-member/.loom.yml", async (root) => {
+  await fs.rm(path.join(root, "project-member", ".loom.yml"))
+  await fs.mkdir(path.join(root, "project-member", ".loom.yml"))
+})
 
 it.live("a session id that names no session leaves the shell call running with the session and harness", () =>
   Effect.gen(function* () {
