@@ -6,7 +6,7 @@ import { define } from "@opencode/plugin/effect/plugin"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import type { Session } from "@opencode/schema/session"
 import { FSUtil } from "@opencode/util/fs-util"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 const SUPERVISOR_DIR = ".supervisor"
 const MANIFEST_FILE = "manifest.json"
@@ -15,12 +15,12 @@ const CARD_FILE = ".loom.yml"
 // A lane's session title is its address, `<project>.<lane>`.
 const LANE_ADDRESS = /^([a-z0-9-]+)\.[a-z0-9-]+$/
 
-const decodeManifest = Schema.decodeUnknownOption(
+const decodeManifest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({ members: Schema.Array(Schema.Struct({ dir: Schema.String, role: Schema.String })) }),
   ),
 )
-const decodeCard = Schema.decodeUnknownOption(
+const decodeCard = Schema.decodeUnknownEffect(
   Schema.Struct({ profile: Schema.Struct({ project: Schema.Struct({ name: Schema.String }) }) }),
 )
 
@@ -36,11 +36,11 @@ export const Plugin = define({
 
     // A workspace file that cannot be used never stops a shell call: the file is named in a warning and the session
     // has no project.
-    const warn = (what: string, file: string, error: unknown) =>
-      Effect.logWarning(`shell environment ${what}`, { file, error: String(error) }).pipe(Effect.as(undefined))
+    const warn = (what: string, file: string, detail: unknown) =>
+      Effect.logWarning(`shell environment ${what}`, { file, detail: String(detail) }).pipe(Effect.as(undefined))
 
-    const readSafe = (file: string) =>
-      fs.readFileStringSafe(file).pipe(Effect.catch((error) => warn("could not read a file", file, error)))
+    const readText = (file: string) =>
+      fs.readFileString(file).pipe(Effect.catch((error) => warn("could not read a file", file, error)))
 
     const parseCard = (file: string, card: string) =>
       Effect.try({
@@ -48,14 +48,9 @@ export const Plugin = define({
         try: () => matter(`---\n${card}\n---\n`, {}).data,
         catch: (error) => error,
       }).pipe(
-        Effect.catch((error) => warn("could not parse a card", file, error)),
-        Effect.flatMap((data) => {
-          if (data === undefined) return Effect.succeed(undefined)
-          const parsed = decodeCard(data)
-          return Option.isSome(parsed)
-            ? Effect.succeed(parsed.value.profile.project.name)
-            : warn("found a card without profile.project.name", file, "schema decode failed")
-        }),
+        Effect.flatMap((data) => decodeCard(data)),
+        Effect.map((parsed) => parsed.profile.project.name),
+        Effect.catch((error) => warn("could not use a card", file, error)),
       )
 
     // The project a dispatched seat works for: the card of the manifest's project member, in the nearest workspace
@@ -66,16 +61,21 @@ export const Plugin = define({
         .pipe(Effect.catch((error) => warn("could not search for a manifest", directory, error).pipe(Effect.as([]))))
       const manifestFile = found[0]
       if (manifestFile === undefined) return undefined
-      const text = yield* readSafe(manifestFile)
+      const text = yield* readText(manifestFile)
       if (text === undefined) return undefined
-      const manifest = decodeManifest(text)
-      if (Option.isNone(manifest))
-        return yield* warn("found a manifest that does not decode", manifestFile, "schema decode failed")
-      const members = manifest.value.members.filter((member) => member.role === "project")
-      if (members.length !== 1) return undefined
-      const container = path.dirname(path.dirname(manifestFile))
-      const cardFile = path.join(container, members[0]!.dir, CARD_FILE)
-      const card = yield* readSafe(cardFile)
+      const manifest = yield* decodeManifest(text).pipe(
+        Effect.catch((error) => warn("could not use a manifest", manifestFile, error)),
+      )
+      if (manifest === undefined) return undefined
+      const members = manifest.members.filter((member) => member.role === "project")
+      if (members.length !== 1)
+        return yield* warn(
+          "found a manifest without one project member",
+          manifestFile,
+          `${members.length} project members`,
+        )
+      const cardFile = path.join(path.dirname(path.dirname(manifestFile)), members[0]!.dir, CARD_FILE)
+      const card = yield* readText(cardFile)
       if (card === undefined) return undefined
       return yield* parseCard(cardFile, card)
     })

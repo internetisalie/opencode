@@ -146,17 +146,15 @@ it.live("a shell call with no session id leaves the environment unchanged", () =
   }),
 )
 
-// A workspace file the plugin cannot use never stops the shell call: the session and the harness are still set and
-// the session has no project.
-// The warnings an effect logs, as text.
+// The warnings an effect logs, each as the logged values: the message, then its fields.
 const withWarnings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
-    const warnings: string[] = []
+    const warnings: unknown[] = []
     const value = yield* effect.pipe(
       Effect.provide(
         Logger.layer([
           Logger.make((entry) => {
-            if (entry.logLevel === "Warn") warnings.push(JSON.stringify(entry.message))
+            if (entry.logLevel === "Warn") warnings.push(entry.message)
           }),
         ]),
       ),
@@ -164,36 +162,61 @@ const withWarnings = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return { value, warnings }
   })
 
-// `warned` is the workspace file the warning names; undefined where the workspace is valid and no file is at fault.
+type Warned = { message: string; file: string; detail: unknown }
+
+// A workspace file the plugin cannot use never stops the shell call: the session and the harness are still set, the
+// session has no project, and one warning names the file and what was wrong with it. `warned` is the whole warning,
+// with `file` relative to the workspace root; undefined where nothing may be logged.
 const unusable = (
   name: string,
   files: { manifest?: string; card?: string },
-  warned: ".supervisor/manifest.json" | "project-member/.loom.yml" | undefined,
+  warned: Warned | undefined,
   damage: (root: string) => Promise<void> = async () => {},
+  repair: (root: string) => Promise<void> = async () => {},
+  test: typeof it.live = it.live,
 ) =>
-  it.live(`${name} leaves the shell call running with no project`, () =>
+  test(`${name} leaves the shell call running with no project`, () =>
     withTempDir((tmp) =>
       Effect.gen(function* () {
         const { create, shellEnv } = yield* setup
         yield* workspace(tmp.path, "loom-delivery", files)
         yield* Effect.promise(() => damage(tmp.path))
         const seat = yield* create("implementer", path.join(tmp.path, "project-member"))
-        const result = yield* withWarnings(shellEnv(seat.id))
+        const result = yield* withWarnings(shellEnv(seat.id)).pipe(
+          Effect.ensuring(Effect.promise(() => repair(tmp.path))),
+        )
         expect(result.value).toEqual(noProject(seat.id))
-        if (warned === undefined) return
-        expect(result.warnings).toHaveLength(1)
-        expect(result.warnings[0]).toContain(JSON.stringify(path.join(tmp.path, warned)).slice(1, -1))
+        expect(result.warnings).toEqual(
+          warned === undefined
+            ? []
+            : [[warned.message, { file: path.join(tmp.path, warned.file), detail: warned.detail }]],
+        )
       }),
     ),
   )
 
-unusable("a card with a YAML syntax error", { card: "profile:\n  project: { name: x\n  bad: [unclosed\n" }, "project-member/.loom.yml")
-unusable("a card without profile.project.name", { card: "profile:\n  harness: opencode\n" }, "project-member/.loom.yml")
-unusable("a manifest that is not JSON", { manifest: "{ not json" }, ".supervisor/manifest.json")
+const MANIFEST = ".supervisor/manifest.json"
+const CARD = "project-member/.loom.yml"
+
+unusable(
+  "a card with a YAML syntax error",
+  { card: "profile:\n  project: { name: x\n  bad: [unclosed\n" },
+  { message: "shell environment could not use a card", file: CARD, detail: expect.stringContaining("YAMLException") },
+)
+unusable(
+  "a card without profile.project.name",
+  { card: "profile:\n  harness: opencode\n" },
+  { message: "shell environment could not use a card", file: CARD, detail: expect.stringContaining("project") },
+)
+unusable(
+  "a manifest that is not JSON",
+  { manifest: "{ not json" },
+  { message: "shell environment could not use a manifest", file: MANIFEST, detail: expect.stringContaining("JSON") },
+)
 unusable(
   "a manifest whose members are not a list",
   { manifest: JSON.stringify({ members: "project-member" }) },
-  ".supervisor/manifest.json",
+  { message: "shell environment could not use a manifest", file: MANIFEST, detail: expect.stringContaining("members") },
 )
 unusable(
   "a manifest with two project members",
@@ -205,16 +228,81 @@ unusable(
       ],
     }),
   },
-  undefined,
+  { message: "shell environment found a manifest without one project member", file: MANIFEST, detail: "2 project members" },
 )
-unusable("a manifest that cannot be read", {}, ".supervisor/manifest.json", async (root) => {
-  await fs.rm(path.join(root, ".supervisor", "manifest.json"))
-  await fs.mkdir(path.join(root, ".supervisor", "manifest.json"))
-})
-unusable("a card that cannot be read", {}, "project-member/.loom.yml", async (root) => {
-  await fs.rm(path.join(root, "project-member", ".loom.yml"))
-  await fs.mkdir(path.join(root, "project-member", ".loom.yml"))
-})
+unusable(
+  "a manifest with no project member",
+  { manifest: JSON.stringify({ members: [{ dir: "base-member", role: "base" }] }) },
+  { message: "shell environment found a manifest without one project member", file: MANIFEST, detail: "0 project members" },
+)
+unusable(
+  "a manifest that cannot be read",
+  {},
+  { message: "shell environment could not read a file", file: MANIFEST, detail: expect.any(String) },
+  async (root) => {
+    await fs.rm(path.join(root, ".supervisor", "manifest.json"))
+    await fs.mkdir(path.join(root, ".supervisor", "manifest.json"))
+  },
+)
+unusable(
+  "a card that cannot be read",
+  {},
+  { message: "shell environment could not read a file", file: CARD, detail: expect.any(String) },
+  async (root) => {
+    await fs.rm(path.join(root, "project-member", ".loom.yml"))
+    await fs.mkdir(path.join(root, "project-member", ".loom.yml"))
+  },
+)
+unusable(
+  "a card that does not exist",
+  {},
+  { message: "shell environment could not read a file", file: CARD, detail: expect.stringContaining("NotFound") },
+  async (root) => {
+    await fs.rm(path.join(root, "project-member", ".loom.yml"))
+  },
+)
+
+// Permission modes do not bind root.
+const permissioned = process.getuid?.() === 0 ? it.live.skip : it.live
+unusable(
+  "a manifest the process may not read",
+  {},
+  { message: "shell environment could not read a file", file: MANIFEST, detail: expect.stringContaining("PermissionDenied") },
+  (root) => fs.chmod(path.join(root, ".supervisor", "manifest.json"), 0),
+  (root) => fs.chmod(path.join(root, ".supervisor", "manifest.json"), 0o644),
+  permissioned,
+)
+unusable(
+  "a card the process may not read",
+  {},
+  { message: "shell environment could not read a file", file: CARD, detail: expect.stringContaining("PermissionDenied") },
+  (root) => fs.chmod(path.join(root, "project-member", ".loom.yml"), 0),
+  (root) => fs.chmod(path.join(root, "project-member", ".loom.yml"), 0o644),
+  permissioned,
+)
+// The search for the manifest fails where a directory on the way cannot be searched; the warning names the session's
+// directory, the search's start.
+unusable(
+  "a workspace directory the process may not search",
+  {},
+  { message: "shell environment could not search for a manifest", file: "project-member", detail: expect.stringContaining("PermissionDenied") },
+  (root) => fs.chmod(path.join(root, ".supervisor"), 0),
+  (root) => fs.chmod(path.join(root, ".supervisor"), 0o755),
+  permissioned,
+)
+
+// A title is a lane address only when the whole title is `<project>.<lane>`.
+for (const title of ["x.y z", "a.b.c", "see x.y"]) {
+  it.live(`the title "${title}" is not a lane address`, () =>
+    withTempDir((tmp) =>
+      Effect.gen(function* () {
+        const { create, shellEnv } = yield* setup
+        const session = yield* create(title, tmp.path)
+        expect(yield* shellEnv(session.id)).toEqual(noProject(session.id))
+      }),
+    ),
+  )
+}
 
 it.live("a session id that names no session leaves the shell call running with the session and harness", () =>
   Effect.gen(function* () {
